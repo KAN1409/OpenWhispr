@@ -301,6 +301,5 @@ class LocalTranscriber private constructor(
             return (candidates.firstOrNull { it.name.contains("int8") } ?: candidates.firstOrNull())
                 ?.absolutePath
         }
-        }
     }
 }

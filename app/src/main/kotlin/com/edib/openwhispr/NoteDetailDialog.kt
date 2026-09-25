@@ -56,6 +56,10 @@ class NoteDetailDialog(
 
     private var playbackSpeed = 1.0f
     private var isTrackingTouch = false
+    private var repoListenerRegistered = false
+    private val repoListener: () -> Unit = {
+        if (isShowing) loadNote()
+    }
 
     private val d = context.resources.displayMetrics.density
     private fun dp(v: Int) = (v * d).toInt()
@@ -577,12 +581,29 @@ class NoteDetailDialog(
             .show()
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (!repoListenerRegistered) {
+            repo.addListener(repoListener)
+            repoListenerRegistered = true
+        }
+        loadNote()
+    }
+
     override fun onStop() {
+        if (repoListenerRegistered) {
+            repo.removeListener(repoListener)
+            repoListenerRegistered = false
+        }
         player.release()
         super.onStop()
     }
 
     override fun onDetachedFromWindow() {
+        if (repoListenerRegistered) {
+            repo.removeListener(repoListener)
+            repoListenerRegistered = false
+        }
         player.release()
         super.onDetachedFromWindow()
     }

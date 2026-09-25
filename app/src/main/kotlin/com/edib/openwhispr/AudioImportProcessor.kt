@@ -13,7 +13,6 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import android.media.MediaMetadataRetriever
 import java.util.UUID
 import kotlin.math.PI
 import kotlin.math.exp

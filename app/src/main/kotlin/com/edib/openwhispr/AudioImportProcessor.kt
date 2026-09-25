@@ -37,6 +37,8 @@ import kotlin.math.sqrt
 object AudioImportProcessor {
     private const val TARGET_RATE = 16_000
     private const val TARGET_ACTIVE_RMS = 0.10f
+    private const val SAFE_ACTIVE_RMS_MIN = 0.05f
+    private const val SAFE_ACTIVE_RMS_MAX = 0.20f
     private const val ACTIVE_THRESHOLD = 0.015f
     private const val MAX_GAIN = 4.0f
     private const val MIN_GAIN = 0.5f
@@ -297,12 +299,16 @@ object AudioImportProcessor {
                 0f
             }
 
-            val rmsGain = if (activeRms > 0f) {
-                (TARGET_ACTIVE_RMS / activeRms).coerceIn(MIN_GAIN, MAX_GAIN)
-            } else {
-                1f
+            // Preserve already-good voice levels. Only normalize when the
+            // active speech RMS is clearly too quiet/loud, and never amplify
+            // based on a tiny transient-only "active" region.
+            val hasEnoughActiveSpeech = activeCount >= TARGET_RATE / 20L // 50 ms
+            val rmsGain = when {
+                !hasEnoughActiveSpeech || activeRms <= 0f -> 1f
+                activeRms in SAFE_ACTIVE_RMS_MIN..SAFE_ACTIVE_RMS_MAX -> 1f
+                else -> (TARGET_ACTIVE_RMS / activeRms).coerceIn(MIN_GAIN, MAX_GAIN)
             }
-            val peakGain = if (peak > 0f) PEAK_LIMIT / peak else 1f
+            val peakGain = if (peak > PEAK_LIMIT) PEAK_LIMIT / peak else 1f
             val gain = min(rmsGain, peakGain).coerceAtLeast(MIN_GAIN)
 
             writeNormalizedWav(rawPcm, finalWav, outputSamples, gain)

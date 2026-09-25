@@ -55,8 +55,7 @@ object NoteTranscriber {
                     val local = if (modelName.isNotBlank()) {
                         LocalTranscriber.create(context, modelName)
                     } else {
-                        val available = LocalTranscriber.availableModels(context)
-                        if (available.isNotEmpty()) LocalTranscriber.create(context, available.first()) else null
+                        null
                     }
 
                     if (local != null) {

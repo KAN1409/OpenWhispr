@@ -518,7 +518,9 @@ class MainActivity : AppCompatActivity() {
         val useLocal = prefs().getBoolean("use_local", true)
         val usePostProcessing = prefs().getBoolean("use_post_processing", false)
         val hasKey = !prefs().getString("api_key", "").isNullOrBlank()
-        val hasModel = LocalTranscriber.availableModels(this).isNotEmpty()
+        val selectedModel = prefs().getString("model_name", "") ?: ""
+        val hasModel = selectedModel.isNotBlank() &&
+            File(filesDir, "models/$selectedModel").isDirectory
         val unrestricted = isIgnoringBatteryOptimizations()
 
         audioRowSub.text = if (audio) "Granted" else "Tap to grant permission"
@@ -567,12 +569,6 @@ class MainActivity : AppCompatActivity() {
             "Tap to add extra refinements"
         else
             customInstructions.replace("\n", " ")
-
-        val cur = prefs().getString("model_name", "") ?: ""
-        if (cur.isBlank() || !File(filesDir, "models/$cur").exists()) {
-            MODEL_CATALOG.firstOrNull { ModelDownloader.isInstalled(this, it) }
-                ?.let { selectModel(it.archive) }
-        }
 
         // Ready logic
         val localReady = useLocal && hasModel

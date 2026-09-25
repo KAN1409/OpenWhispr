@@ -238,12 +238,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         try {
             val modelName = prefs().getString("model_name", "") ?: ""
             if (modelName.isBlank()) {
-                // Auto-detect first available model
-                val models = LocalTranscriber.availableModels(this)
-                if (models.isNotEmpty()) {
-                    Log.i(TAG, "Auto-detected model: ${models.first()}")
-                    localTranscriber = LocalTranscriber.create(this, models.first())
-                }
+                localTranscriber = null
             } else {
                 localTranscriber = LocalTranscriber.create(this, modelName)
             }

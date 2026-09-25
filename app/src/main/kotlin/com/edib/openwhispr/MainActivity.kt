@@ -217,6 +217,7 @@ class MainActivity : AppCompatActivity() {
         modelContainer.addView(sectionHeader("Local models"))
         for (m in MODEL_CATALOG) modelContainer.addView(buildModelRow(m))
         dictationContainer.addView(modelContainer)
+        dictationContainer.addView(BenchmarkUi.settingsRow(this))
 
         dictationContainer.addView(sectionHeader("POST-PROCESSING"))
 

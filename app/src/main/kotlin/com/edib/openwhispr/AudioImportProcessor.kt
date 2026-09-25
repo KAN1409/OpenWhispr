@@ -79,14 +79,22 @@ object AudioImportProcessor {
             val declaredChannels =
                 sourceFormat.getIntegerOrNull(MediaFormat.KEY_CHANNEL_COUNT) ?: 1
 
-            val mediaDecoder = MediaCodec.createDecoderByType(mime)
-            decoder = mediaDecoder
-            mediaDecoder.configure(sourceFormat, null, null, 0)
-            mediaDecoder.start()
+            val isRawPcm = mime == MediaFormat.MIMETYPE_AUDIO_RAW || mime == "audio/raw"
+            val mediaDecoder = if (isRawPcm) {
+                null
+            } else {
+                MediaCodec.createDecoderByType(mime).also { created ->
+                    decoder = created
+                    created.configure(sourceFormat, null, null, 0)
+                    created.start()
+                }
+            }
 
             var currentRate = declaredRate
             var currentChannels = declaredChannels
-            var currentEncoding = AudioFormat.ENCODING_PCM_16BIT
+            var currentEncoding =
+                sourceFormat.getIntegerOrNull(MediaFormat.KEY_PCM_ENCODING)
+                    ?: AudioFormat.ENCODING_PCM_16BIT
             var resampler: BandLimitedResampler? = null
             var resamplerInputRate: Int? = null
 
@@ -144,93 +152,120 @@ object AudioImportProcessor {
                         .forEach(::acceptCanonical)
                 }
 
-                val info = MediaCodec.BufferInfo()
-                var inputDone = false
-                var outputDone = false
+                if (mediaDecoder == null) {
+                    // PCM WAV/AIFF-style tracks are already decoded. There is
+                    // no MediaCodec for audio/raw on many devices, so feed the
+                    // extractor's PCM samples directly into the same canonical
+                    // downmix/resample path.
+                    val rawBuffer =
+                        ByteBuffer.allocateDirect(256 * 1024)
+                            .order(ByteOrder.LITTLE_ENDIAN)
 
-                while (!outputDone) {
-                    if (!inputDone) {
-                        val inputIndex = mediaDecoder.dequeueInputBuffer(10_000)
-                        if (inputIndex >= 0) {
-                            val input = mediaDecoder.getInputBuffer(inputIndex)
-                                ?: throw IllegalStateException(
-                                    "Decoder input buffer unavailable"
-                                )
-                            input.clear()
+                    while (true) {
+                        rawBuffer.clear()
+                        val size = extractor.readSampleData(rawBuffer, 0)
+                        if (size < 0) break
 
-                            val size = extractor.readSampleData(input, 0)
-                            if (size < 0) {
-                                mediaDecoder.queueInputBuffer(
-                                    inputIndex,
-                                    0,
-                                    0,
-                                    0,
-                                    MediaCodec.BUFFER_FLAG_END_OF_STREAM
-                                )
-                                inputDone = true
-                            } else {
-                                mediaDecoder.queueInputBuffer(
-                                    inputIndex,
-                                    0,
-                                    size,
-                                    extractor.sampleTime,
-                                    0
-                                )
-                                extractor.advance()
-                            }
-                        }
+                        rawBuffer.position(0)
+                        rawBuffer.limit(size)
+                        val mono = decodeInterleavedPcm(
+                            rawBuffer.slice().order(ByteOrder.LITTLE_ENDIAN),
+                            currentChannels.coerceAtLeast(1),
+                            currentEncoding
+                        )
+                        feedDecodedMono(mono, currentRate)
+                        extractor.advance()
                     }
+                } else {
+                    val activeDecoder = mediaDecoder
+                    val info = MediaCodec.BufferInfo()
+                    var inputDone = false
+                    var outputDone = false
 
-                    when (
-                        val outputIndex =
-                            mediaDecoder.dequeueOutputBuffer(info, 10_000)
-                    ) {
-                        MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            val outputFormat = mediaDecoder.outputFormat
-                            currentRate =
-                                outputFormat.getIntegerOrNull(
-                                    MediaFormat.KEY_SAMPLE_RATE
-                                ) ?: currentRate
-                            currentChannels =
-                                outputFormat.getIntegerOrNull(
-                                    MediaFormat.KEY_CHANNEL_COUNT
-                                ) ?: currentChannels
-                            currentEncoding =
-                                outputFormat.getIntegerOrNull(
-                                    MediaFormat.KEY_PCM_ENCODING
-                                ) ?: AudioFormat.ENCODING_PCM_16BIT
+                    while (!outputDone) {
+                        if (!inputDone) {
+                            val inputIndex = activeDecoder.dequeueInputBuffer(10_000)
+                            if (inputIndex >= 0) {
+                                val input = activeDecoder.getInputBuffer(inputIndex)
+                                    ?: throw IllegalStateException(
+                                        "Decoder input buffer unavailable"
+                                    )
+                                input.clear()
+
+                                val size = extractor.readSampleData(input, 0)
+                                if (size < 0) {
+                                    activeDecoder.queueInputBuffer(
+                                        inputIndex,
+                                        0,
+                                        0,
+                                        0,
+                                        MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                                    )
+                                    inputDone = true
+                                } else {
+                                    activeDecoder.queueInputBuffer(
+                                        inputIndex,
+                                        0,
+                                        size,
+                                        extractor.sampleTime,
+                                        0
+                                    )
+                                    extractor.advance()
+                                }
+                            }
                         }
 
-                        MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
-
-                        else -> if (outputIndex >= 0) {
-                            val isCodecConfig =
-                                (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
-
-                            if (info.size > 0 && !isCodecConfig) {
-                                val output =
-                                    mediaDecoder.getOutputBuffer(outputIndex)
-                                        ?: throw IllegalStateException(
-                                            "Decoder output buffer unavailable"
-                                        )
-                                val duplicate =
-                                    output.duplicate().order(ByteOrder.LITTLE_ENDIAN)
-                                duplicate.position(info.offset)
-                                duplicate.limit(info.offset + info.size)
-                                val slice =
-                                    duplicate.slice().order(ByteOrder.LITTLE_ENDIAN)
-
-                                val mono = decodeInterleavedPcm(
-                                    slice,
-                                    currentChannels.coerceAtLeast(1),
-                                    currentEncoding
-                                )
-                                feedDecodedMono(mono, currentRate)
+                        when (
+                            val outputIndex =
+                                activeDecoder.dequeueOutputBuffer(info, 10_000)
+                        ) {
+                            MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                                val outputFormat = activeDecoder.outputFormat
+                                currentRate =
+                                    outputFormat.getIntegerOrNull(
+                                        MediaFormat.KEY_SAMPLE_RATE
+                                    ) ?: currentRate
+                                currentChannels =
+                                    outputFormat.getIntegerOrNull(
+                                        MediaFormat.KEY_CHANNEL_COUNT
+                                    ) ?: currentChannels
+                                currentEncoding =
+                                    outputFormat.getIntegerOrNull(
+                                        MediaFormat.KEY_PCM_ENCODING
+                                    ) ?: AudioFormat.ENCODING_PCM_16BIT
                             }
 
-                            outputDone =
-                                (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                            mediaDecoder.releaseOutputBuffer(outputIndex, false)
+                            MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+
+                            else -> if (outputIndex >= 0) {
+                                val isCodecConfig =
+                                    (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+
+                                if (info.size > 0 && !isCodecConfig) {
+                                    val output =
+                                        activeDecoder.getOutputBuffer(outputIndex)
+                                            ?: throw IllegalStateException(
+                                                "Decoder output buffer unavailable"
+                                            )
+                                    val duplicate =
+                                        output.duplicate().order(ByteOrder.LITTLE_ENDIAN)
+                                    duplicate.position(info.offset)
+                                    duplicate.limit(info.offset + info.size)
+                                    val slice =
+                                        duplicate.slice().order(ByteOrder.LITTLE_ENDIAN)
+
+                                    val mono = decodeInterleavedPcm(
+                                        slice,
+                                        currentChannels.coerceAtLeast(1),
+                                        currentEncoding
+                                    )
+                                    feedDecodedMono(mono, currentRate)
+                                }
+
+                                outputDone =
+                                    (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                                activeDecoder.releaseOutputBuffer(outputIndex, false)
+                            }
                         }
                     }
                 }

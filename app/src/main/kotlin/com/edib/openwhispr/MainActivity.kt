@@ -340,7 +340,10 @@ class MainActivity : AppCompatActivity() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "audio/*"
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            )
         }
         @Suppress("DEPRECATION")
         startActivityForResult(intent, REQUEST_IMPORT_AUDIO)
@@ -351,6 +354,12 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_IMPORT_AUDIO && resultCode == RESULT_OK) {
             val uri = data?.data ?: return
+            runCatching {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
             if (::notesView.isInitialized) {
                 notesView.importAudio(uri)
             }

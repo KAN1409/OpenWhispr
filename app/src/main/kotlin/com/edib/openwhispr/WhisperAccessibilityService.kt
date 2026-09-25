@@ -137,6 +137,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     // Local transcription engine (loaded lazily)
+    @Volatile
     private var localTranscriber: LocalTranscriber? = null
 
     private val dp get() = resources.displayMetrics.density
@@ -262,6 +263,22 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     /** Reload local model (called from MainActivity when settings change) */
     fun reloadModel() { thread { initLocalModel() } }
+
+    /**
+     * Reuse the already-resident selected model for Voice Notes when the
+     * accessibility service has it loaded. This avoids paying Large-v3 model
+     * initialization twice and avoids a second native copy in memory.
+     */
+    fun transcribeWithResidentLocalModel(
+        modelName: String,
+        samples: FloatArray,
+        sampleRate: Int
+    ): String? {
+        val selected = prefs().getString("model_name", "") ?: ""
+        if (selected != modelName) return null
+        val resident = localTranscriber ?: return null
+        return resident.transcribe(samples, sampleRate)
+    }
 
     // --- Overlay visibility (multi-signal, OR'd together) ---
 

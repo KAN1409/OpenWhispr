@@ -404,13 +404,16 @@ class NotesTimelineView(
         importingOverlay.visibility = View.VISIBLE
 
         Thread({
-            var prepared: AudioImportProcessor.PreparedAudio? = null
+            var preparedFile: java.io.File? = null
             try {
-                prepared = AudioImportProcessor.prepare(context.applicationContext, uri)
+                val prepared =
+                    AudioImportProcessor.prepare(context.applicationContext, uri)
+                preparedFile = prepared.wavFile
                 val note = repo.createAndSaveNoteFromCanonicalWavFile(
                     prepared.wavFile,
                     prepared.durationMs
                 )
+                val importSummary = prepared.summary
                 NoteTranscriber.transcribeNoteAsync(context.applicationContext, note.id)
 
                 post {
@@ -420,7 +423,7 @@ class NotesTimelineView(
                     refreshNotes()
                     Toast.makeText(
                         context,
-                        "Imported · ${prepared.summary}",
+                        "Imported · $importSummary",
                         Toast.LENGTH_SHORT
                     ).show()
                     NoteDetailDialog(context, note.id) { refreshNotes() }.show()
@@ -437,7 +440,7 @@ class NotesTimelineView(
                     ).show()
                 }
             } finally {
-                prepared?.wavFile?.delete()
+                preparedFile?.delete()
             }
         }, "voice-note-import").start()
     }

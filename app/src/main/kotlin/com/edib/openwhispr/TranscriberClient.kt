@@ -10,7 +10,12 @@ import kotlin.math.sqrt
 object TranscriberClient {
     data class Result(val text: String?, val error: String?)
     private val client = OkHttpClient()
-    private const val MULTILINGUAL_PROMPT = "العربية English Deutsch. Preserve code-switching. Transcribe every spoken word in its original language and script."
+    // Whisper treats `prompt` as prior transcript context, not as an instruction.
+    // A natural mixed-script vocabulary seed preserves Egyptian code-switching far
+    // more reliably than an English instruction about language preservation.
+    private const val MULTILINGUAL_PROMPT =
+        "عاوز، اشيل، اللي، كان، بيتحط، دلوقتي، نجرب، العربي. " +
+            "overlay button, applications, application, update, user interface, build, APK, English text, recording test."
 
     fun parseResponse(json: String): Result = try {
         val obj = JSONObject(json)
@@ -24,7 +29,7 @@ object TranscriberClient {
     fun transcribe(wavData: ByteArray, apiKey: String, callback: (Result) -> Unit) {
         transcribeOnce(wavData, apiKey, null) { baseline ->
             val text = baseline.text?.trim().orEmpty()
-            if (text.isBlank() || wavData.size > 320_044 || !containsArabic(text) || containsLatin(text)) {
+            if (text.isBlank() || !containsArabic(text) || containsLatin(text)) {
                 callback(baseline); return@transcribeOnce
             }
             transcribeOnce(wavData, apiKey, MULTILINGUAL_PROMPT) { prompted ->

@@ -47,8 +47,7 @@ object AudioImportProcessor {
         val durationMs: Long,
         val sourceSampleRate: Int,
         val sourceChannels: Int,
-        val appliedGain: Float,
-        val sourceCopy: File
+        val appliedGain: Float
     ) {
         val summary: String
             get() = "${sourceSampleRate / 1000.0} kHz / ${sourceChannels}ch → 16 kHz mono"
@@ -313,18 +312,17 @@ object AudioImportProcessor {
                 durationMs = durationMs,
                 sourceSampleRate = declaredRate,
                 sourceChannels = declaredChannels,
-                appliedGain = gain,
-                sourceCopy = sourceCopy
+                appliedGain = gain
             )
         } finally {
             runCatching { decoder?.stop() }
             runCatching { decoder?.release() }
             runCatching { extractor.release() }
             rawPcm.delete()
+            sourceCopy.delete()
 
             if (!finalWav.exists() || finalWav.length() <= 44L) {
                 finalWav.delete()
-                sourceCopy.delete()
             }
         }
     }

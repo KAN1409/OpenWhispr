@@ -13,6 +13,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import android.media.MediaMetadataRetriever
 import java.util.UUID
 import kotlin.math.PI
 import kotlin.math.exp
@@ -47,7 +48,8 @@ object AudioImportProcessor {
         val durationMs: Long,
         val sourceSampleRate: Int,
         val sourceChannels: Int,
-        val appliedGain: Float
+        val appliedGain: Float,
+        val sourceCopy: File
     ) {
         val summary: String
             get() = "${sourceSampleRate / 1000.0} kHz / ${sourceChannels}ch → 16 kHz mono"
@@ -59,9 +61,19 @@ object AudioImportProcessor {
         val id = UUID.randomUUID().toString()
         val rawPcm = File(context.cacheDir, "import-$id.pcm")
         val finalWav = File(context.cacheDir, "import-$id.wav")
+        val sourceCopy = File(context.cacheDir, "import-$id.source")
 
         try {
-            extractor.setDataSource(context, uri, null)
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(sourceCopy).use { out ->
+                    input.copyTo(out, 64 * 1024)
+                    out.flush()
+                    out.fd.sync()
+                }
+            } ?: throw IllegalArgumentException("Unable to read selected audio")
+            require(sourceCopy.length() > 0L) { "Selected audio is empty" }
+
+            extractor.setDataSource(sourceCopy.absolutePath)
 
             val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
                 extractor.getTrackFormat(index)
@@ -302,7 +314,8 @@ object AudioImportProcessor {
                 durationMs = durationMs,
                 sourceSampleRate = declaredRate,
                 sourceChannels = declaredChannels,
-                appliedGain = gain
+                appliedGain = gain,
+                sourceCopy = sourceCopy
             )
         } finally {
             runCatching { decoder?.stop() }
@@ -312,6 +325,7 @@ object AudioImportProcessor {
 
             if (!finalWav.exists() || finalWav.length() <= 44L) {
                 finalWav.delete()
+                sourceCopy.delete()
             }
         }
     }

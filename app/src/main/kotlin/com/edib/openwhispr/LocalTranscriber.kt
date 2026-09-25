@@ -124,11 +124,11 @@ class LocalTranscriber private constructor(
         }
 
         /** Create a LocalTranscriber for the given model directory name. Returns null on failure. */
-        fun create(ctx: Context, modelName: String): LocalTranscriber? {
+        fun create(ctx: Context, modelName: String): LocalTranscriber? = exclusive {
             val appContext = ctx.applicationContext
-            val recognizer = createRecognizer(appContext, modelName) ?: return null
+            val recognizer = createRecognizer(appContext, modelName) ?: return@exclusive null
             Log.i(TAG, "Loaded model: $modelName")
-            return LocalTranscriber(appContext, modelName, recognizer)
+            LocalTranscriber(appContext, modelName, recognizer)
         }
 
         private fun createRecognizer(ctx: Context, modelName: String): OfflineRecognizer? {

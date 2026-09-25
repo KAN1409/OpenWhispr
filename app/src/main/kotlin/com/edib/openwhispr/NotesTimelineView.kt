@@ -46,6 +46,7 @@ class NotesTimelineView(
 
     private var currentSearchQuery = ""
     private var isSearchVisible = false
+    private val repositoryListener: () -> Unit = { post { refreshNotes() } }
 
     private val d = context.resources.displayMetrics.density
     private fun dp(v: Int) = (v * d).toInt()
@@ -299,7 +300,7 @@ class NotesTimelineView(
         }
 
         // Listen for repository changes (insert, delete, update, transcribe)
-        repo.addListener { post { refreshNotes() } }
+        repo.addListener(repositoryListener)
 
         refreshNotes()
     }
@@ -348,6 +349,12 @@ class NotesTimelineView(
         recorder.cancel()
         recordingOverlay.visibility = View.GONE
         recordFab.visibility = View.VISIBLE
+    }
+
+    fun dispose() {
+        if (recorder.isRecording) recorder.cancel()
+        recorder.onTickListener = null
+        repo.removeListener(repositoryListener)
     }
 
     private fun toggleSearch() {

@@ -151,6 +151,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         handler.post(focusPoller)
         // Try to load local model in background
         thread { initLocalModel() }
+        thread { NoteTranscriber.resumePendingNotes(applicationContext) }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -169,7 +170,16 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
-        handler.removeCallbacks(focusPoller)
+        if (state == State.RECORDING && currentSessionType == SessionType.NOTE) {
+            stopNoteRecording()
+        } else {
+            state = State.IDLE
+            try { audioRecord?.stop() } catch (_: Exception) {}
+            try { audioRecord?.release() } catch (_: Exception) {}
+            audioRecord = null
+            pcmStream = null
+        }
+        handler.removeCallbacksAndMessages(null)
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } catch (e: Exception) {
@@ -179,7 +189,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    private fun startForegroundNotification() {
+    private fun startForegroundNotification(usingMicrophone: Boolean = false) {
         // Promotes the service's process priority and gives it a persistent
         // (silent, minimum-importance) notification. This is what keeps the
         // background service running -- both against being swiped away in
@@ -208,7 +218,9 @@ class WhisperAccessibilityService : AccessibilityService() {
                 .build()
 
             if (Build.VERSION.SDK_INT >= 34) {
-                startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                    (if (usingMicrophone) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
+                startForeground(NOTIF_ID, notification, types)
             } else {
                 startForeground(NOTIF_ID, notification)
             }
@@ -461,6 +473,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (isLongPressTriggered) return@setOnTouchListener true
                     val dx = abs(ev.rawX - touchX)
                     val dy = abs(ev.rawY - touchY)
                     if (dx + dy > TAP_THRESHOLD_DP * dp) {
@@ -679,15 +692,26 @@ class WhisperAccessibilityService : AccessibilityService() {
         val bufSize = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
+        if (bufSize <= 0) { toast("Audio recorder unavailable"); return }
         audioRecord = try {
             AudioRecord(
                 MediaRecorder.AudioSource.MIC, SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize
             )
         } catch (_: SecurityException) { toast("Audio permission denied"); return }
+        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+            audioRecord?.release(); audioRecord = null
+            toast("Audio recorder unavailable"); return
+        }
 
         pcmStream = ByteArrayOutputStream()
-        audioRecord!!.startRecording()
+        try {
+            startForegroundNotification(usingMicrophone = true)
+            audioRecord!!.startRecording()
+        } catch (e: Exception) {
+            audioRecord?.release(); audioRecord = null; pcmStream = null
+            toast("Unable to start recording: ${e.message}"); return
+        }
         state = State.RECORDING
         currentSessionType = SessionType.DICTATION
         setBusy(false)
@@ -715,15 +739,26 @@ class WhisperAccessibilityService : AccessibilityService() {
         val bufSize = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
+        if (bufSize <= 0) { toast("Audio recorder unavailable"); return }
         audioRecord = try {
             AudioRecord(
                 MediaRecorder.AudioSource.MIC, SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize
             )
         } catch (_: SecurityException) { toast("Audio permission denied"); return }
+        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+            audioRecord?.release(); audioRecord = null
+            toast("Audio recorder unavailable"); return
+        }
 
         pcmStream = ByteArrayOutputStream()
-        audioRecord!!.startRecording()
+        try {
+            startForegroundNotification(usingMicrophone = true)
+            audioRecord!!.startRecording()
+        } catch (e: Exception) {
+            audioRecord?.release(); audioRecord = null; pcmStream = null
+            toast("Unable to start recording: ${e.message}"); return
+        }
         state = State.RECORDING
         currentSessionType = SessionType.NOTE
         noteRecordingStartTime = System.currentTimeMillis()
@@ -765,13 +800,30 @@ class WhisperAccessibilityService : AccessibilityService() {
         if (state != State.RECORDING || currentSessionType != SessionType.NOTE) return
 
         stopNoteTimer()
+        state = State.IDLE
+        currentSessionType = SessionType.DICTATION
 
-        audioRecord?.stop()
-        audioRecord?.release()
+        try { audioRecord?.stop() } catch (_: Exception) {}
+        try { audioRecord?.release() } catch (_: Exception) {}
         audioRecord = null
 
         val pcm = pcmStream?.toByteArray() ?: ByteArray(0)
         pcmStream = null
+        startForegroundNotification(usingMicrophone = false)
+
+        // The stop action does not complete until the WAV has been fsync'd and
+        // its PENDING row exists. Transcription remains asynchronous.
+        var savedNote: Note? = null
+        var saveError: Exception? = null
+        if (pcm.isNotEmpty()) {
+            try {
+                savedNote = NotesRepository.getInstance(this).createAndSaveNoteFromPcm(pcm, SAMPLE_RATE)
+            } catch (e: Exception) {
+                saveError = e
+                Log.e(TAG, "Failed to persist voice note", e)
+            }
+        }
+        savedNote?.let { NoteTranscriber.transcribeNoteAsync(this, it.id) }
 
         handler.post {
             val wm = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -793,28 +845,12 @@ class WhisperAccessibilityService : AccessibilityService() {
             setAppearance(COLOR_IDLE)
             setIcon(R.drawable.ic_app_logo)
             setOpacity(active = false)
-            state = State.IDLE
-            currentSessionType = SessionType.DICTATION
             updateOverlayVisibility()
 
-            if (pcm.isNotEmpty()) {
-                thread {
-                    try {
-                        val repo = NotesRepository.getInstance(this@WhisperAccessibilityService)
-                        val note = repo.createAndSaveNoteFromPcm(pcm, SAMPLE_RATE)
-                        NoteTranscriber.transcribeNoteAsync(this@WhisperAccessibilityService, note.id)
-                        handler.post {
-                            showFeedback("✓ Note saved")
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to persist voice note", e)
-                        handler.post {
-                            showFeedback("Note save failed")
-                        }
-                    }
-                }
-            } else {
-                showFeedback("No audio captured")
+            when {
+                savedNote != null -> showFeedback("✓ Note saved")
+                saveError != null -> showFeedback("Note save failed — audio recovery queued")
+                else -> showFeedback("No audio captured")
             }
         }
     }
@@ -830,6 +866,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
+        startForegroundNotification(usingMicrophone = false)
 
         val pcm = pcmStream?.toByteArray() ?: ByteArray(0)
         pcmStream = null
@@ -1206,7 +1243,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         Log.i(
             TAG,
-            "$prefix package=${node.packageName} class=${node.className} focused=${node.isFocused} editable=${node.isEditable} text=${node.text} desc=${node.contentDescription} actions=[$actions]"
+            "$prefix package=${node.packageName} class=${node.className} focused=${node.isFocused} editable=${node.isEditable} actions=[$actions]"
         )
     }
 

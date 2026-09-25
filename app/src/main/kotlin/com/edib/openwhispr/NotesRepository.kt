@@ -278,10 +278,7 @@ class NotesRepository(
         val wavBytes = WavWriter.encode(pcm, sampleRate = sampleRate)
         val audioFile = File(notesDir, "$id.wav")
 
-        FileOutputStream(audioFile).use { out ->
-            out.write(wavBytes)
-            out.flush()
-        }
+        writeDurably(audioFile, wavBytes)
 
         val note = Note(
             id = id,
@@ -295,15 +292,11 @@ class NotesRepository(
             isPinned = false
         )
 
-        val inserted = try {
-            storage.insert(note)
-        } catch (e: Exception) {
-            audioFile.delete()
-            throw e
-        }
+        val inserted = storage.insert(note)
         if (!inserted) {
-            audioFile.delete()
-            throw IllegalStateException("Failed to insert note into database")
+            // The audio has already been fsync'd.  Keep it for startup
+            // reconciliation rather than turning a metadata failure into data loss.
+            throw IllegalStateException("Failed to insert note into database; audio retained at ${audioFile.absolutePath}")
         }
 
         notifyListeners()
@@ -318,10 +311,7 @@ class NotesRepository(
         val now = System.currentTimeMillis()
         val audioFile = File(notesDir, "$id.wav")
 
-        FileOutputStream(audioFile).use { out ->
-            out.write(wavBytes)
-            out.flush()
-        }
+        writeDurably(audioFile, wavBytes)
 
         val note = Note(
             id = id,
@@ -335,39 +325,112 @@ class NotesRepository(
             isPinned = false
         )
 
-        val inserted = try {
-            storage.insert(note)
-        } catch (e: Exception) {
-            audioFile.delete()
-            throw e
-        }
+        val inserted = storage.insert(note)
         if (!inserted) {
-            audioFile.delete()
-            throw IllegalStateException("Failed to insert note into database")
+            throw IllegalStateException("Failed to insert note into database; audio retained at ${audioFile.absolutePath}")
         }
 
         notifyListeners()
         return note
     }
 
-    /**
-     * Reconciles files on disk with the database to remove unreferenced orphan recordings.
-     */
-    fun cleanupOrphanAudioFiles() {
+    private fun writeDurably(destination: File, bytes: ByteArray) {
+        val directory = destination.parentFile
+            ?: throw IllegalStateException("Recording has no parent directory")
+        if ((!directory.exists() && !directory.mkdirs()) || !directory.isDirectory) {
+            throw IllegalStateException("Unable to create notes directory")
+        }
+        val staging = File(directory, "${destination.name}.part")
         try {
-            val allNotes = storage.getAll()
-            val validPaths = allNotes.map { it.audioPath }.toSet()
-            val files = notesDir.listFiles() ?: return
-            val threshold = System.currentTimeMillis() - 5 * 60 * 1000L // 5-minute grace period
-            for (file in files) {
-                if (file.isFile && file.name.endsWith(".wav")) {
-                    if (!validPaths.contains(file.absolutePath) && file.lastModified() < threshold) {
-                        file.delete()
-                    }
-                }
+            FileOutputStream(staging).use { out ->
+                out.write(bytes)
+                out.flush()
+                out.fd.sync()
+            }
+            if (!staging.renameTo(destination)) {
+                throw IllegalStateException("Unable to commit recording file")
             }
         } catch (e: Exception) {
-            Log.w("NotesRepository", "Orphan audio cleanup error", e)
+            // An incomplete staging file is never treated as a playable recording.
+            staging.delete()
+            throw e
+        }
+    }
+
+    /**
+     * Repairs crash windows without deleting completed recordings. Valid orphan WAVs are
+     * imported as PENDING notes; interrupted deletes are either rolled back or completed.
+     */
+    @Synchronized
+    fun reconcileAudioIntegrity() {
+        try {
+            val allNotes = storage.getAll()
+            val notesByPath = allNotes.associateBy { File(it.audioPath).absolutePath }
+            val files = notesDir.listFiles() ?: return
+
+            // Recover/finish a delete that was interrupted between file rename and DB delete.
+            for (file in files.filter { it.name.endsWith(".deleting") }) {
+                val original = File(file.parentFile, file.name.removeSuffix(".deleting"))
+                if (notesByPath.containsKey(original.absolutePath)) file.renameTo(original) else file.delete()
+            }
+
+            for (file in files) {
+                if (!file.isFile || !file.name.endsWith(".wav") || notesByPath.containsKey(file.absolutePath)) continue
+                if (!isCompleteWav(file)) continue
+                val id = file.name.removeSuffix(".wav")
+                if (runCatching { UUID.fromString(id) }.isFailure) continue
+                val now = file.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
+                val durationMs = ((file.length() - 44L).coerceAtLeast(0L) * 1000L) / (16000L * 2L)
+                storage.insert(
+                    Note(
+                        id = id,
+                        createdAt = now,
+                        modifiedAt = now,
+                        audioPath = file.absolutePath,
+                        audioDurationMs = durationMs,
+                        transcriptionState = Note.State.PENDING
+                    )
+                )
+            }
+
+            // Surface broken references instead of leaving an endless PENDING state.
+            storage.getAll().forEach { note ->
+                if (!File(note.audioPath).isFile) {
+                    storage.update(
+                        note.copy(
+                            transcriptionState = Note.State.FAILED,
+                            errorMessage = "Recording audio file missing",
+                            modifiedAt = System.currentTimeMillis()
+                        )
+                    )
+                }
+            }
+            notifyListeners()
+        } catch (e: Exception) {
+            Log.w("NotesRepository", "Audio reconciliation error", e)
+        }
+    }
+
+    @Deprecated("Use reconcileAudioIntegrity; completed orphan audio must not be deleted")
+    fun cleanupOrphanAudioFiles() = reconcileAudioIntegrity()
+
+    private fun isCompleteWav(file: File): Boolean {
+        if (file.length() < 44L) return false
+        return try {
+            file.inputStream().use { input ->
+                val header = ByteArray(44)
+                if (input.read(header) != 44) return false
+                fun ascii(offset: Int, size: Int) = String(header, offset, size, Charsets.US_ASCII)
+                fun littleEndianInt(offset: Int): Long =
+                    (header[offset].toLong() and 0xff) or
+                        ((header[offset + 1].toLong() and 0xff) shl 8) or
+                        ((header[offset + 2].toLong() and 0xff) shl 16) or
+                        ((header[offset + 3].toLong() and 0xff) shl 24)
+                ascii(0, 4) == "RIFF" && ascii(8, 4) == "WAVE" && ascii(36, 4) == "data" &&
+                    littleEndianInt(40) == file.length() - 44L
+            }
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -380,7 +443,8 @@ class NotesRepository(
     fun markTranscriptionSuccess(id: String, rawTranscript: String): Boolean {
         val note = storage.get(id) ?: return false
         val updated = note.copy(
-            originalTranscript = rawTranscript.trim(),
+            // The first ASR result is evidence. Retries must never rewrite it.
+            originalTranscript = note.originalTranscript ?: rawTranscript.trim(),
             transcriptionState = Note.State.COMPLETE,
             modifiedAt = System.currentTimeMillis(),
             errorMessage = null
@@ -448,17 +512,17 @@ class NotesRepository(
     }
 
     fun deleteNote(id: String): Boolean {
-        val note = storage.get(id)
-        if (note != null) {
-            try {
-                val f = File(note.audioPath)
-                if (f.exists()) f.delete()
-            } catch (e: Exception) {
-                Log.e("NotesRepository", "Failed to delete audio file: ${note.audioPath}", e)
-            }
-        }
+        val note = storage.get(id) ?: return false
+        val audio = File(note.audioPath)
+        val tombstone = File(audio.parentFile, "${audio.name}.deleting")
+        if (audio.exists() && !audio.renameTo(tombstone)) return false
         val ok = storage.delete(id)
-        if (ok) notifyListeners()
+        if (ok) {
+            tombstone.delete()
+            notifyListeners()
+        } else if (tombstone.exists()) {
+            tombstone.renameTo(audio)
+        }
         return ok
     }
 

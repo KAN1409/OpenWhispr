@@ -82,6 +82,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         checkForUpdate()
+        Thread { NoteTranscriber.resumePendingNotes(applicationContext) }.start()
 
         val outer = vertical(0, 0)
 
@@ -351,6 +352,11 @@ class MainActivity : AppCompatActivity() {
         if (::notesView.isInitialized) {
             notesView.refreshNotes()
         }
+    }
+
+    override fun onDestroy() {
+        if (::notesView.isInitialized) notesView.dispose()
+        super.onDestroy()
     }
 
     private fun showNotesScreen() {

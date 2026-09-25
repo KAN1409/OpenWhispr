@@ -162,9 +162,9 @@ class V1HardeningDestructiveTest {
         assertFalse("Audio file must be deleted when note is deleted", audioFile.exists())
     }
 
-    // 8. Database insertion failure rolls back WAV file creation
+    // 8. Database insertion failure must retain the already durable WAV
     @Test
-    fun `test DB insertion failure deletes WAV file and avoids orphan audio`() {
+    fun `test DB insertion failure retains WAV and startup reconciliation imports it`() {
         val failingStorage = object : NoteStorage {
             override fun insert(note: Note): Boolean = false
             override fun update(note: Note): Boolean = false
@@ -174,6 +174,7 @@ class V1HardeningDestructiveTest {
             override fun delete(id: String): Boolean = false
         }
         val repo = NotesRepository.forTesting(failingStorage)
+        val before = repo.notesDir.listFiles()?.map { it.absolutePath }?.toSet().orEmpty()
 
         try {
             repo.createAndSaveNoteFromPcm(ByteArray(16000))
@@ -181,11 +182,22 @@ class V1HardeningDestructiveTest {
         } catch (e: Exception) {
             assertTrue(e is IllegalStateException)
         }
+
+        val retained = repo.notesDir.listFiles()
+            ?.filter { it.extension == "wav" && it.absolutePath !in before }
+            .orEmpty()
+        assertEquals("Durable audio must survive DB failure", 1, retained.size)
+
+        val recoveredRepo = NotesRepository.forTesting(InMemoryNoteStorage())
+        recoveredRepo.reconcileAudioIntegrity()
+        val recovered = recoveredRepo.getAllNotes().single { it.audioPath == retained.single().absolutePath }
+        assertEquals(Note.State.PENDING, recovered.transcriptionState)
+        recoveredRepo.deleteNote(recovered.id)
     }
 
-    // 9. Orphan audio reconciliation deletes unreferenced old WAV files
+    // 9. Orphan audio reconciliation imports complete recordings
     @Test
-    fun `test orphan audio cleanup reconciles unreferenced files`() {
+    fun `test orphan audio reconciliation imports unreferenced complete WAV`() {
         val repo = NotesRepository.forTesting()
         val note = repo.createAndSaveNoteFromPcm(ByteArray(16000))
 
@@ -193,18 +205,17 @@ class V1HardeningDestructiveTest {
         val tempDir = File(System.getProperty("java.io.tmpdir"), "openwhispr_test/notes")
         tempDir.mkdirs()
         val orphanFile = File(tempDir, "${UUID.randomUUID()}.wav")
-        FileOutputStream(orphanFile).use { it.write(ByteArray(100)) }
-        // Set last modified to 10 minutes ago
-        orphanFile.setLastModified(System.currentTimeMillis() - 10 * 60 * 1000L)
+        FileOutputStream(orphanFile).use { it.write(WavWriter.encode(ByteArray(32000))) }
         assertTrue(orphanFile.exists())
 
-        repo.cleanupOrphanAudioFiles()
+        repo.reconcileAudioIntegrity()
 
-        // Orphan must be deleted, while referenced note audio stays intact
-        assertFalse(orphanFile.exists())
+        assertTrue(orphanFile.exists())
+        assertNotNull(repo.getAllNotes().firstOrNull { it.audioPath == orphanFile.absolutePath })
         assertTrue(File(note.audioPath).exists())
 
         repo.deleteNote(note.id)
+        repo.getAllNotes().firstOrNull { it.audioPath == orphanFile.absolutePath }?.let { repo.deleteNote(it.id) }
     }
 
     // 10. Audio file is unexpectedly missing - handled gracefully
@@ -295,6 +306,17 @@ class V1HardeningDestructiveTest {
         assertEquals(mixedArabicEnglishText, repo.getNote(note.id)!!.originalTranscript)
         assertNull(repo.getNote(note.id)!!.editedTranscript)
 
+        repo.deleteNote(note.id)
+    }
+
+    @Test
+    fun `test retranscription success cannot overwrite first original transcript`() {
+        val repo = NotesRepository.forTesting()
+        val note = repo.createAndSaveNoteFromPcm(ByteArray(16000))
+        repo.markTranscriptionSuccess(note.id, "first raw ASR")
+        repo.markTranscriptionPending(note.id)
+        repo.markTranscriptionSuccess(note.id, "different retry ASR")
+        assertEquals("first raw ASR", repo.getNote(note.id)!!.originalTranscript)
         repo.deleteNote(note.id)
     }
 }

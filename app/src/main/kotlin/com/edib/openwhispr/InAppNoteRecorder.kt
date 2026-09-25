@@ -34,6 +34,10 @@ class InAppNoteRecorder(private val context: Context) {
         val bufSize = AudioRecord.getMinBufferSize(
             sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
+        if (bufSize <= 0) {
+            onError("Audio recorder unavailable")
+            return false
+        }
 
         val record = try {
             AudioRecord(
@@ -59,7 +63,16 @@ class InAppNoteRecorder(private val context: Context) {
         isRecordingInternal = true
         startTimeMs = System.currentTimeMillis()
 
-        record.startRecording()
+        try {
+            record.startRecording()
+        } catch (e: Exception) {
+            isRecordingInternal = false
+            audioRecord = null
+            pcmStream = null
+            record.release()
+            onError("Unable to start recording: ${e.message}")
+            return false
+        }
 
         thread(name = "in-app-audio-record") {
             val buf = ByteArray(bufSize)

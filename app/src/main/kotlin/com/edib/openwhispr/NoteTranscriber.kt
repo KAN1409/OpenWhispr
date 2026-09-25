@@ -3,6 +3,7 @@ package com.edib.openwhispr
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 
 /**
@@ -15,16 +16,30 @@ import kotlin.concurrent.thread
  */
 object NoteTranscriber {
     private const val TAG = "NoteTranscriber"
+    private val inFlight = ConcurrentHashMap.newKeySet<String>()
+
+    fun resumePendingNotes(context: Context) {
+        val repo = NotesRepository.getInstance(context)
+        repo.reconcileAudioIntegrity()
+        repo.getAllNotes()
+            .filter { it.transcriptionState == Note.State.PENDING }
+            .forEach { transcribeNoteAsync(context, it.id) }
+    }
 
     fun transcribeNoteAsync(context: Context, noteId: String) {
+        if (!inFlight.add(noteId)) return
         val repo = NotesRepository.getInstance(context)
-        val note = repo.getNote(noteId) ?: return
+        val note = repo.getNote(noteId) ?: run {
+            inFlight.remove(noteId)
+            return
+        }
 
         repo.markTranscriptionPending(noteId)
 
         val audioFile = File(note.audioPath)
         if (!audioFile.exists() || audioFile.length() <= 44L) {
             repo.markTranscriptionFailed(noteId, "Recording audio file missing or empty")
+            inFlight.remove(noteId)
             return
         }
 
@@ -60,6 +75,7 @@ object NoteTranscriber {
                         } else {
                             repo.markTranscriptionFailed(noteId, "No speech detected")
                         }
+                        inFlight.remove(noteId)
                         return@thread
                     }
                     // If local model is not loaded, fall back to cloud if key available
@@ -69,20 +85,26 @@ object NoteTranscriber {
                 val apiKey = prefs.getString("api_key", "") ?: ""
                 if (apiKey.isBlank()) {
                     repo.markTranscriptionFailed(noteId, "No Groq API key configured. Tap Settings to set API key or download a local model.")
+                    inFlight.remove(noteId)
                     return@thread
                 }
 
                 TranscriberClient.transcribe(wavBytes, apiKey) { result ->
-                    if (result.text != null && result.text.isNotBlank()) {
-                        repo.markTranscriptionSuccess(noteId, result.text)
-                    } else {
-                        val err = result.error ?: "Transcription produced no text"
-                        repo.markTranscriptionFailed(noteId, err)
+                    try {
+                        if (result.text != null && result.text.isNotBlank()) {
+                            repo.markTranscriptionSuccess(noteId, result.text)
+                        } else {
+                            val err = result.error ?: "Transcription produced no text"
+                            repo.markTranscriptionFailed(noteId, err)
+                        }
+                    } finally {
+                        inFlight.remove(noteId)
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Transcription failed for note $noteId", e)
                 repo.markTranscriptionFailed(noteId, e.message ?: "Transcription error")
+                inFlight.remove(noteId)
             }
         }
     }

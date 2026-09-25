@@ -36,6 +36,9 @@ object NoteTranscriber {
             return
         }
 
+        // Central hook so every Voice Note transcription path (in-app, overlay,
+        // imports/retries) can opt into benchmark mode without changing callers.
+        LocalModelBenchmark.requestIfEnabled(context.applicationContext, noteId)
         repo.markTranscriptionPending(noteId)
 
         val audioFile = File(note.audioPath)

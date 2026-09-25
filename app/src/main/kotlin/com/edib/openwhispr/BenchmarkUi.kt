@@ -133,6 +133,9 @@ object BenchmarkUi {
             rerun.isEnabled = !LocalModelBenchmark.isRunning(noteId)
             results.removeAllViews()
 
+            val noteDurationMs = NotesRepository.getInstance(context.applicationContext)
+                .getNote(noteId)?.audioDurationMs ?: 0L
+
             snapshot.results.forEach { result ->
                 val card = LinearLayout(context).apply {
                     orientation = LinearLayout.VERTICAL
@@ -158,7 +161,13 @@ object BenchmarkUi {
                         BenchmarkModelState.WAITING -> "Waiting"
                         BenchmarkModelState.RUNNING -> "Transcribing…"
                         BenchmarkModelState.COMPLETE -> if (result.elapsedMs > 0L) {
-                            "Complete · ${result.elapsedMs} ms"
+                            val seconds = result.elapsedMs / 1000.0
+                            if (noteDurationMs > 0L) {
+                                val rtf = result.elapsedMs.toDouble() / noteDurationMs.toDouble()
+                                "Complete · %.1fs · RTF %.2f×".format(seconds, rtf)
+                            } else {
+                                "Complete · %.1fs".format(seconds)
+                            }
                         } else {
                             "Complete"
                         }

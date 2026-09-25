@@ -130,7 +130,9 @@ class InAppNoteRecorder(private val context: Context) {
         val repo = NotesRepository.getInstance(context)
         val note = repo.createAndSaveNoteFromPcm(pcm, 16000)
 
-        // Asynchronously transcribe the durable note
+        // Capture testing intent at note creation. The primary transcript still
+        // runs first and remains authoritative.
+        LocalModelBenchmark.requestIfEnabled(context, note.id)
         NoteTranscriber.transcribeNoteAsync(context, note.id)
 
         return note

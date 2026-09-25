@@ -70,7 +70,10 @@ object NoteTranscriber {
                             samples[i] = ((hi shl 8) or lo).toShort().toFloat() / 32768f
                         }
 
-                        val rawText = LocalTranscriber.exclusive {
+                        val residentText = WhisperAccessibilityService.instance
+                            ?.transcribeWithResidentLocalModel(modelName, samples, 16000)
+
+                        val rawText = residentText ?: LocalTranscriber.exclusive {
                             val local = LocalTranscriber.create(context, modelName)
                             if (local == null) {
                                 null

@@ -138,7 +138,13 @@ class LocalTranscriber private constructor(
                 return null
             }
 
-            val config = detectModelConfig(modelDir) ?: run {
+            val installIssue = installationIssue(modelDir, modelName)
+            if (installIssue != null) {
+                Log.e(TAG, "Model install invalid for $modelName: $installIssue")
+                return null
+            }
+
+            val config = detectModelConfig(modelDir, modelName) ?: run {
                 Log.e(TAG, "Could not detect model type in $modelDir")
                 return null
             }
@@ -154,21 +160,59 @@ class LocalTranscriber private constructor(
             }
         }
 
-        /** Auto-detect model type from files present in the directory. */
-        private fun detectModelConfig(dir: File): OfflineRecognizerConfig? {
-            val p = dir.absolutePath
-            val tokens = "$p/tokens.txt"
-            if (!File(tokens).exists()) return null
+        /** Returns null only when the downloaded model directory is complete enough to load. */
+        fun installationIssue(ctx: Context, modelName: String): String? =
+            installationIssue(File(ctx.filesDir, "models/$modelName"), modelName)
 
-            // Moonshine (has preprocess.onnx)
-            if (File("$p/preprocess.onnx").exists()) {
+        fun isModelInstallComplete(ctx: Context, modelName: String): Boolean =
+            installationIssue(ctx, modelName) == null
+
+        private fun installationIssue(dir: File, modelName: String): String? {
+            if (!dir.isDirectory) return "Model directory is missing"
+
+            val tokens = findTokensFile(dir)
+                ?: return "Token file is missing"
+
+            val lowerName = modelName.lowercase()
+            if (lowerName.contains("whisper")) {
+                if (findModelFile(dir, "encoder") == null) return "Whisper encoder is missing"
+                if (findModelFile(dir, "decoder") == null) return "Whisper decoder is missing"
+                return null
+            }
+
+            if (lowerName.contains("moonshine")) {
+                if (!File(dir, "preprocess.onnx").isFile) return "Moonshine preprocessor is missing"
+                if (findModelFile(dir, "encode") == null) return "Moonshine encoder is missing"
+                if (findModelFile(dir, "uncached_decode") == null) return "Moonshine uncached decoder is missing"
+                if (findModelFile(dir, "cached_decode") == null) return "Moonshine cached decoder is missing"
+                return null
+            }
+
+            // For Parakeet/NeMo packages, accept either transducer/TDT
+            // (encoder+decoder+joiner) or a single CTC model file.
+            val hasTransducer =
+                findModelFile(dir, "encoder") != null &&
+                findModelFile(dir, "decoder") != null &&
+                findModelFile(dir, "joiner") != null
+            val hasCtc = findModelFile(dir, "model") != null
+            return if (hasTransducer || hasCtc) null else "Required NeMo model files are missing"
+        }
+
+        /** Auto-detect model type from files present in the directory. */
+        private fun detectModelConfig(dir: File, modelName: String): OfflineRecognizerConfig? {
+            val tokens = findTokensFile(dir)?.absolutePath ?: return null
+            val lowerName = modelName.lowercase()
+
+            // Moonshine v1 package naming is preprocess.onnx + encode*.onnx +
+            // uncached_decode*.onnx + cached_decode*.onnx.
+            if (lowerName.contains("moonshine") || File(dir, "preprocess.onnx").exists()) {
                 return OfflineRecognizerConfig(
                     modelConfig = OfflineModelConfig(
                         moonshine = OfflineMoonshineModelConfig(
-                            preprocessor = "$p/preprocess.onnx",
-                            encoder = findFile(p, "encode") ?: return null,
-                            uncachedDecoder = findFile(p, "uncached_decode") ?: return null,
-                            cachedDecoder = findFile(p, "cached_decode") ?: return null,
+                            preprocessor = File(dir, "preprocess.onnx").absolutePath,
+                            encoder = findModelFile(dir, "encode") ?: return null,
+                            uncachedDecoder = findModelFile(dir, "uncached_decode") ?: return null,
+                            cachedDecoder = findModelFile(dir, "cached_decode") ?: return null,
                         ),
                         tokens = tokens,
                         numThreads = 2,
@@ -176,15 +220,19 @@ class LocalTranscriber private constructor(
                 )
             }
 
-            // Whisper (has encoder + decoder, no joiner)
-            val whisperEncoder = findFile(p, "encoder")
-            val whisperDecoder = findFile(p, "decoder")
-            if (whisperEncoder != null && whisperDecoder != null && findFile(p, "joiner") == null) {
+            // Official sherpa Whisper archives prefix files with the model name:
+            // e.g. large-v3-encoder.int8.onnx and large-v3-tokens.txt.
+            if (lowerName.contains("whisper")) {
+                val whisperEncoder = findModelFile(dir, "encoder") ?: return null
+                val whisperDecoder = findModelFile(dir, "decoder") ?: return null
+                val englishOnly = lowerName.contains(".en")
                 return OfflineRecognizerConfig(
                     modelConfig = OfflineModelConfig(
                         whisper = OfflineWhisperModelConfig(
                             encoder = whisperEncoder,
                             decoder = whisperDecoder,
+                            language = if (englishOnly) "en" else "",
+                            task = "transcribe",
                         ),
                         tokens = tokens,
                         numThreads = 2,
@@ -193,10 +241,10 @@ class LocalTranscriber private constructor(
                 )
             }
 
-            // NeMo transducer / Parakeet TDT (has encoder + decoder + joiner)
-            val encoder = findFile(p, "encoder")
-            val decoder = findFile(p, "decoder")
-            val joiner = findFile(p, "joiner")
+            // NeMo transducer / Parakeet TDT.
+            val encoder = findModelFile(dir, "encoder")
+            val decoder = findModelFile(dir, "decoder")
+            val joiner = findModelFile(dir, "joiner")
             if (encoder != null && decoder != null && joiner != null) {
                 return OfflineRecognizerConfig(
                     modelConfig = OfflineModelConfig(
@@ -212,8 +260,8 @@ class LocalTranscriber private constructor(
                 )
             }
 
-            // NeMo CTC (single model.onnx / model.int8.onnx)
-            val ctcModel = findFile(p, "model")
+            // NeMo CTC.
+            val ctcModel = findModelFile(dir, "model")
             if (ctcModel != null) {
                 return OfflineRecognizerConfig(
                     modelConfig = OfflineModelConfig(
@@ -227,14 +275,32 @@ class LocalTranscriber private constructor(
             return null
         }
 
-        /** Find first file matching prefix (prefer int8 quantized). */
-        private fun findFile(dir: String, prefix: String): String? {
-            val d = File(dir)
-            d.listFiles()?.firstOrNull { it.name.startsWith(prefix) && it.name.contains("int8") }
-                ?.let { return it.absolutePath }
-            return d.listFiles()?.firstOrNull {
-                it.name.startsWith(prefix) && (it.name.endsWith(".onnx") || it.name.endsWith(".ort"))
-            }?.absolutePath
+        private fun findTokensFile(dir: File): File? {
+            val files = dir.listFiles()?.filter { it.isFile } ?: return null
+            return files.firstOrNull { it.name == "tokens.txt" }
+                ?: files.firstOrNull { it.name.endsWith("-tokens.txt") }
+        }
+
+        /**
+         * Finds both generic sherpa names (encoder.int8.onnx) and Whisper's
+         * prefixed names (large-v3-encoder.int8.onnx). Prefer int8 artifacts.
+         */
+        private fun findModelFile(dir: File, role: String): String? {
+            val candidates = dir.listFiles()?.filter { file ->
+                if (!file.isFile) return@filter false
+                val n = file.name
+                val supported = n.endsWith(".onnx") || n.endsWith(".ort")
+                val roleMatch =
+                    n.startsWith("$role.") ||
+                    n.startsWith("$role-") ||
+                    n.contains("-$role.") ||
+                    n.contains("-$role-")
+                supported && roleMatch
+            } ?: return null
+
+            return (candidates.firstOrNull { it.name.contains("int8") } ?: candidates.firstOrNull())
+                ?.absolutePath
+        }
         }
     }
 }

@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.UUID
 
@@ -304,6 +305,43 @@ class NotesRepository(
     }
 
     /**
+     * Imports an already-canonical PCM16 mono 16-kHz WAV without loading the
+     * whole file into memory. The source remains untouched.
+     */
+    fun createAndSaveNoteFromCanonicalWavFile(sourceWav: File, durationMs: Long): Note {
+        require(sourceWav.isFile && sourceWav.length() > 44L) { "Imported WAV is empty" }
+        require(isCompleteWav(sourceWav)) { "Imported WAV is incomplete" }
+
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val audioFile = File(notesDir, "$id.wav")
+
+        writeDurably(audioFile, sourceWav)
+
+        val note = Note(
+            id = id,
+            createdAt = now,
+            modifiedAt = now,
+            audioPath = audioFile.absolutePath,
+            audioDurationMs = durationMs,
+            originalTranscript = null,
+            editedTranscript = null,
+            transcriptionState = Note.State.PENDING,
+            isPinned = false
+        )
+
+        val inserted = storage.insert(note)
+        if (!inserted) {
+            throw IllegalStateException(
+                "Failed to insert imported note into database; audio retained at ${audioFile.absolutePath}"
+            )
+        }
+
+        notifyListeners()
+        return note
+    }
+
+    /**
      * Durably stores complete WAV bytes directly.
      */
     fun createAndSaveNoteFromWav(wavBytes: ByteArray, durationMs: Long): Note {
@@ -332,6 +370,30 @@ class NotesRepository(
 
         notifyListeners()
         return note
+    }
+
+    private fun writeDurably(destination: File, source: File) {
+        val directory = destination.parentFile
+            ?: throw IllegalStateException("Recording has no parent directory")
+        if ((!directory.exists() && !directory.mkdirs()) || !directory.isDirectory) {
+            throw IllegalStateException("Unable to create notes directory")
+        }
+        val staging = File(directory, "${destination.name}.part")
+        try {
+            FileInputStream(source).use { input ->
+                FileOutputStream(staging).use { out ->
+                    input.copyTo(out, 64 * 1024)
+                    out.flush()
+                    out.fd.sync()
+                }
+            }
+            if (!staging.renameTo(destination)) {
+                throw IllegalStateException("Unable to commit imported recording")
+            }
+        } catch (e: Exception) {
+            staging.delete()
+            throw e
+        }
     }
 
     private fun writeDurably(destination: File, bytes: ByteArray) {

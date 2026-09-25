@@ -17,6 +17,8 @@ data class Model(
 )
 
 val MODEL_CATALOG = listOf(
+    Model("Whisper Large v3 Multilingual", "sherpa-onnx-whisper-large-v3",
+        1019, "★★★★★ Offline Arabic + English"),
     Model("Parakeet 110M", "sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8",
         100, "★★★ Best value", recommended = true),
     Model("Whisper Base", "sherpa-onnx-whisper-base.en",

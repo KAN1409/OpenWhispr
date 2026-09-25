@@ -3,256 +3,534 @@ package com.edib.openwhispr
 import android.app.Activity
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.text.Editable
-import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
-import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
-import android.widget.Toast
+import android.widget.*
 import androidx.core.app.ActivityCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import java.util.Locale
 
-class NotesTimelineView(context: Context, private val onOpenSettings: () -> Unit) : FrameLayout(context) {
+/**
+ * Primary Notes screen.
+ * Dark. Minimal. Dense. Native Android. Consistent with OpenWispr.
+ * No gradients, no glowing AI controls, no chatbot UI.
+ */
+class NotesTimelineView(
+    context: Context,
+    private val onOpenSettings: () -> Unit
+) : FrameLayout(context) {
+
     private val repo = NotesRepository.getInstance(context)
     private val recorder = InAppNoteRecorder(context)
-    private val notesList = LinearLayout(context)
-    private val emptyView = TextView(context)
-    private val titleText = TextView(context)
-    private val searchField = EditText(context)
-    private lateinit var clearSearch: View
-    private lateinit var searchButton: View
-    private lateinit var settingsButton: View
-    private lateinit var searchBack: View
+
+    private val container: LinearLayout
+    private val notesListLayout: LinearLayout
+    private val searchBarLayout: LinearLayout
+    private val searchEditText: EditText
+    private val emptyView: TextView
     private val recordFab: FloatingActionButton
+
+    // Minimal In-App Recording Screen/Overlay
     private val recordingOverlay: LinearLayout
     private val recTimerText: TextView
     private val recLevelIndicator: LinearProgressIndicator
-    private var query = ""
-    private var searchMode = false
+    private val recStopBtn: MaterialButton
+    private val recCancelBtn: MaterialButton
+
+    private var currentSearchQuery = ""
+    private var isSearchVisible = false
     private val repositoryListener: () -> Unit = { post { refreshNotes() } }
-    private fun dp(value: Int) = with(OpenWisprUi) { context.dp(value) }
+
+    private val d = context.resources.displayMetrics.density
+    private fun dp(v: Int) = (v * d).toInt()
 
     init {
-        setBackgroundColor(OpenWisprUi.BACKGROUND)
-        val scroller = ScrollView(context).apply { isFillViewport = true; clipToPadding = false }
-        val content = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(20), dp(104))
+        setBackgroundColor(0xFF111111.toInt())
+
+        val scrollView = ScrollView(context).apply {
+            isFillViewport = true
+            setBackgroundColor(0xFF111111.toInt())
         }
 
+        container = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(24), dp(20), dp(100))
+        }
+
+        // ================= TOP BAR: OpenWispr | Search | Settings =================
         val topBar = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(56)
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(16)
+            }
+            layoutParams = lp
         }
-        searchBack = OpenWisprUi.iconButton(context, R.drawable.ic_back, "Close search") { exitSearch() }.apply { visibility = GONE }
-        titleText.apply {
-            text = "OpenWispr"; textSize = 22f; setTypeface(typeface, Typeface.BOLD)
-            setTextColor(OpenWisprUi.ON_BACKGROUND); gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, dp(56), 1f)
+
+        val brandTitle = TextView(context).apply {
+            text = "OpenWispr"
+            textSize = 22f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
-        searchField.apply {
-            hint = "Search notes…"; setHintTextColor(OpenWisprUi.MUTED); setTextColor(OpenWisprUi.ON_BACKGROUND)
-            textSize = 17f; setSingleLine(true); background = null; visibility = GONE
-            textDirection = TEXT_DIRECTION_FIRST_STRONG
-            layoutParams = LinearLayout.LayoutParams(0, dp(56), 1f)
+        topBar.addView(brandTitle)
+
+        val searchBtn = TextView(context).apply {
+            text = "Search"
+            textSize = 15f
+            setTextColor(0xFFE0E0E0.toInt())
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { toggleSearch() }
+        }
+        topBar.addView(searchBtn)
+
+        val settingsBtn = TextView(context).apply {
+            text = "Settings"
+            textSize = 15f
+            setTextColor(0xFFE0E0E0.toInt())
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(dp(12), dp(8), 0, dp(8))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onOpenSettings() }
+        }
+        topBar.addView(settingsBtn)
+
+        container.addView(topBar)
+
+        // ================= SECTION TITLE: Notes =================
+        val notesTitle = TextView(context).apply {
+            text = "Notes"
+            textSize = 28f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(0, 0, 0, dp(12))
+        }
+        container.addView(notesTitle)
+
+        // ================= SEARCH BAR (Expandable) =================
+        searchBarLayout = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            background = GradientDrawable().apply {
+                setColor(0xFF1E1E1E.toInt())
+                cornerRadius = 8 * d
+            }
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(16)
+            }
+            layoutParams = lp
+            visibility = View.GONE
+        }
+
+        searchEditText = EditText(context).apply {
+            hint = "Search notes (Arabic or English)..."
+            setHintTextColor(0xFF757575.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 15f
+            background = null
+            textDirection = View.TEXT_DIRECTION_LOCALE
+            textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             addTextChangedListener(object : TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                override fun afterTextChanged(s: Editable?) = Unit
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    query = s?.toString()?.trim().orEmpty()
-                    clearSearch.visibility = if (query.isEmpty()) GONE else VISIBLE
+                    currentSearchQuery = s?.toString()?.trim() ?: ""
                     refreshNotes()
                 }
+                override fun afterTextChanged(s: Editable?) {}
             })
         }
-        clearSearch = OpenWisprUi.iconButton(context, R.drawable.ic_close, "Clear search") { searchField.setText("") }.apply { visibility = GONE }
-        searchButton = OpenWisprUi.iconButton(context, R.drawable.ic_search, "Search voice notes") { enterSearch() }
-        settingsButton = OpenWisprUi.iconButton(context, R.drawable.ic_settings, "Open settings", onOpenSettings)
-        topBar.addView(searchBack); topBar.addView(titleText); topBar.addView(searchField)
-        topBar.addView(clearSearch); topBar.addView(searchButton); topBar.addView(settingsButton)
-        content.addView(topBar)
-        content.addView(TextView(context).apply {
-            text = "Notes"; textSize = 28f; setTypeface(typeface, Typeface.BOLD)
-            setTextColor(OpenWisprUi.ON_BACKGROUND); setPadding(0, dp(12), 0, dp(10))
-        })
-        notesList.orientation = LinearLayout.VERTICAL
-        content.addView(notesList)
-        emptyView.apply {
-            textSize = 16f; setTextColor(OpenWisprUi.MUTED); gravity = Gravity.CENTER
-            setLineSpacing(dp(4).toFloat(), 1f); setPadding(dp(16), dp(64), dp(16), dp(64))
-        }
-        content.addView(emptyView)
-        scroller.addView(content)
-        addView(scroller, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        searchBarLayout.addView(searchEditText)
 
+        val clearSearchBtn = TextView(context).apply {
+            text = "✕"
+            textSize = 14f
+            setTextColor(0xFF888888.toInt())
+            setPadding(dp(8), dp(4), dp(4), dp(4))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                searchEditText.setText("")
+                toggleSearch()
+            }
+        }
+        searchBarLayout.addView(clearSearchBtn)
+        container.addView(searchBarLayout)
+
+        // ================= NOTES LIST CONTAINER =================
+        notesListLayout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        container.addView(notesListLayout)
+
+        emptyView = TextView(context).apply {
+            text = "No notes yet.\nTap the mic below to start recording."
+            textSize = 15f
+            setTextColor(0xFF757575.toInt())
+            gravity = Gravity.CENTER
+            setPadding(dp(24), dp(48), dp(24), dp(48))
+            visibility = View.GONE
+        }
+        container.addView(emptyView)
+
+        scrollView.addView(container)
+        addView(scrollView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+
+        // ================= BOTTOM MICROPHONE FAB =================
         recordFab = FloatingActionButton(context).apply {
             setImageResource(R.drawable.ic_mic)
-            backgroundTintList = ColorStateList.valueOf(OpenWisprUi.PRIMARY)
-            imageTintList = ColorStateList.valueOf(OpenWisprUi.BACKGROUND)
+            backgroundTintList = ColorStateList.valueOf(0xFFEF4444.toInt())
+            imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
             contentDescription = "Record voice note"
-            layoutParams = LayoutParams(dp(56), dp(56), Gravity.BOTTOM or Gravity.END).apply { marginEnd = dp(20); bottomMargin = dp(20) }
-            setOnClickListener { startRecordingFlow() }
+            val lp = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.BOTTOM or Gravity.END
+                marginEnd = dp(24)
+                bottomMargin = dp(24)
+            }
+            layoutParams = lp
+            setOnClickListener {
+                startRecordingFlow()
+            }
         }
         addView(recordFab)
 
-        recTimerText = TextView(context).apply {
-            text = "00:00"; textSize = 44f; setTypeface(Typeface.MONOSPACE, Typeface.NORMAL)
-            setTextColor(OpenWisprUi.ON_BACKGROUND); gravity = Gravity.CENTER
-        }
-        recLevelIndicator = LinearProgressIndicator(context).apply {
-            isIndeterminate = false; max = 100; trackColor = OpenWisprUi.SURFACE_HIGH
-            setIndicatorColor(OpenWisprUi.RECORDING)
-            layoutParams = LinearLayout.LayoutParams(dp(176), dp(4)).apply { topMargin = dp(24); bottomMargin = dp(18) }
-        }
+        // ================= MINIMAL RECORDING UI =================
+        // Layout:
+        // 00:37
+        // [ restrained audio level/waveform ]
+        // Recording voice note
+        // [ STOP ]
+        // Cancel
         recordingOverlay = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setBackgroundColor(OpenWisprUi.BACKGROUND)
-            setPadding(dp(24), dp(48), dp(24), dp(48)); visibility = GONE; isClickable = true
-            addView(recTimerText); addView(recLevelIndicator)
-            addView(TextView(context).apply {
-                text = "Recording voice note"; textSize = 15f; setTextColor(OpenWisprUi.MUTED)
-                gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(32))
-            })
-            addView(MaterialButton(context).apply {
-                text = "STOP"; contentDescription = "Stop and save voice note"; minWidth = dp(152); minimumHeight = dp(52)
-                cornerRadius = dp(26); backgroundTintList = ColorStateList.valueOf(OpenWisprUi.RECORDING)
-                setTextColor(0xFFFFFFFF.toInt()); setOnClickListener { stopAndSaveRecording() }
-            })
-            addView(MaterialButton(context, null, android.R.attr.borderlessButtonStyle).apply {
-                text = "Cancel"; minimumHeight = dp(48); setTextColor(OpenWisprUi.MUTED)
-                setOnClickListener { cancelRecording() }
-            })
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(0xFF111111.toInt())
+            setPadding(dp(32), dp(48), dp(32), dp(48))
+            visibility = View.GONE
+            isClickable = true
+            isFocusable = true
         }
+
+        recTimerText = TextView(context).apply {
+            text = "00:00"
+            textSize = 44f
+            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER
+        }
+        recordingOverlay.addView(recTimerText)
+
+        recLevelIndicator = LinearProgressIndicator(context).apply {
+            isIndeterminate = false
+            max = 100
+            progress = 0
+            trackColor = 0xFF2A2A2A.toInt()
+            setIndicatorColor(0xFFEF4444.toInt())
+            trackCornerRadius = dp(2)
+            val lp = LinearLayout.LayoutParams(dp(180), dp(4)).apply {
+                topMargin = dp(20)
+                bottomMargin = dp(16)
+            }
+            layoutParams = lp
+        }
+        recordingOverlay.addView(recLevelIndicator)
+
+        val recLabel = TextView(context).apply {
+            text = "Recording voice note"
+            textSize = 14f
+            setTextColor(0xFF888888.toInt())
+            gravity = Gravity.CENTER
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(36)
+            }
+            layoutParams = lp
+        }
+        recordingOverlay.addView(recLabel)
+
+        recStopBtn = MaterialButton(context).apply {
+            text = "STOP"
+            textSize = 15f
+            setTypeface(typeface, Typeface.BOLD)
+            setBackgroundColor(0xFFEF4444.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            cornerRadius = dp(24)
+            minWidth = dp(140)
+            setOnClickListener {
+                stopAndSaveRecording()
+            }
+        }
+        recordingOverlay.addView(recStopBtn)
+
+        recCancelBtn = MaterialButton(context, null, android.R.attr.borderlessButtonStyle).apply {
+            text = "Cancel"
+            textSize = 14f
+            setTextColor(0xFF888888.toInt())
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(16)
+            }
+            layoutParams = lp
+            setOnClickListener {
+                cancelRecording()
+            }
+        }
+        recordingOverlay.addView(recCancelBtn)
+
         addView(recordingOverlay, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
+        // Hook up recorder ticks to restrained audio level & timer
         recorder.onTickListener = { elapsedMs, amplitude ->
-            val seconds = elapsedMs / 1000
-            recTimerText.text = String.format(Locale.US, "%02d:%02d", seconds / 60, seconds % 60)
+            val totalSec = elapsedMs / 1000
+            val min = totalSec / 60
+            val sec = totalSec % 60
+            recTimerText.text = String.format(Locale.US, "%02d:%02d", min, sec)
             recLevelIndicator.progress = (amplitude * 100).toInt().coerceIn(0, 100)
         }
+
+        // Listen for repository changes (insert, delete, update, transcribe)
         repo.addListener(repositoryListener)
+
         refreshNotes()
     }
 
-    fun isRecording() = recorder.isRecording
-
-    private fun enterSearch() {
-        searchMode = true; titleText.visibility = GONE; searchButton.visibility = GONE; settingsButton.visibility = GONE
-        searchBack.visibility = VISIBLE; searchField.visibility = VISIBLE; searchField.requestFocus()
-        (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(searchField, InputMethodManager.SHOW_IMPLICIT)
-    }
-
-    private fun exitSearch() {
-        searchField.setText(""); searchField.clearFocus(); searchMode = false
-        (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(searchField.windowToken, 0)
-        titleText.visibility = VISIBLE; searchButton.visibility = VISIBLE; settingsButton.visibility = VISIBLE
-        searchBack.visibility = GONE; searchField.visibility = GONE; clearSearch.visibility = GONE
-        refreshNotes()
-    }
+    fun isRecording(): Boolean = recorder.isRecording
 
     private fun startRecordingFlow() {
-        if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            if (context is Activity) ActivityCompat.requestPermissions(context as Activity, arrayOf(android.Manifest.permission.RECORD_AUDIO), 1)
+        if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            if (context is Activity) {
+                ActivityCompat.requestPermissions(context as Activity, arrayOf(android.Manifest.permission.RECORD_AUDIO), 1)
+            }
             return
         }
-        if (recorder.start { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }) {
-            recordFab.visibility = GONE; recordingOverlay.visibility = VISIBLE
-            recTimerText.text = "00:00"; recLevelIndicator.progress = 0
+
+        val ok = recorder.start { err ->
+            Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+        }
+        if (ok) {
+            recordFab.visibility = View.GONE
+            recordingOverlay.visibility = View.VISIBLE
+            recTimerText.text = "00:00"
+            recLevelIndicator.progress = 0
         }
     }
 
     private fun stopAndSaveRecording() {
-        val note = recorder.stopAndSave(); recordingOverlay.visibility = GONE; recordFab.visibility = VISIBLE
-        if (note == null) Toast.makeText(context, "No audio recorded", Toast.LENGTH_SHORT).show()
-        else { refreshNotes(); NoteDetailDialog(context, note.id) { refreshNotes() }.show() }
+        // Critical invariant: recorder.stopAndSave() durably persists raw PCM as .wav to disk
+        // and inserts the Note record BEFORE triggering asynchronous transcription.
+        val note = recorder.stopAndSave()
+        recordingOverlay.visibility = View.GONE
+        recordFab.visibility = View.VISIBLE
+
+        if (note != null) {
+            // Durable persistence has succeeded!
+            Toast.makeText(context, "Note saved", Toast.LENGTH_SHORT).show()
+            refreshNotes()
+            // Return/show note detail immediately in PENDING state
+            NoteDetailDialog(context, note.id) { refreshNotes() }.show()
+        } else {
+            Toast.makeText(context, "No audio recorded", Toast.LENGTH_SHORT).show()
+        }
     }
 
-    fun cancelRecording() { recorder.cancel(); recordingOverlay.visibility = GONE; recordFab.visibility = VISIBLE }
-    fun dispose() { if (recorder.isRecording) recorder.cancel(); recorder.onTickListener = null; repo.removeListener(repositoryListener) }
+    fun cancelRecording() {
+        recorder.cancel()
+        recordingOverlay.visibility = View.GONE
+        recordFab.visibility = View.VISIBLE
+    }
+
+    fun dispose() {
+        if (recorder.isRecording) recorder.cancel()
+        recorder.onTickListener = null
+        repo.removeListener(repositoryListener)
+    }
+
+    private fun toggleSearch() {
+        isSearchVisible = !isSearchVisible
+        searchBarLayout.visibility = if (isSearchVisible) View.VISIBLE else View.GONE
+        if (isSearchVisible) {
+            searchEditText.requestFocus()
+        } else {
+            searchEditText.setText("")
+            currentSearchQuery = ""
+            refreshNotes()
+        }
+    }
 
     fun refreshNotes() {
-        notesList.removeAllViews()
-        val notes = if (query.isEmpty()) repo.getAllNotes() else repo.searchNotes(query)
-        emptyView.visibility = if (notes.isEmpty()) VISIBLE else GONE
-        emptyView.text = if (searchMode) "No notes found" else "No voice notes yet\n\nTap the microphone to record one."
-        if (notes.isEmpty()) return
-        val pinned = notes.filter { it.isPinned }
-        if (pinned.isNotEmpty()) { addSection("PINNED"); pinned.forEach(::addCard) }
-        notes.filterNot { it.isPinned }.groupBy { Note.formatDateHeader(it.createdAt) }.forEach { (day, items) ->
-            addSection(day.uppercase(Locale.getDefault())); items.forEach(::addCard)
+        notesListLayout.removeAllViews()
+
+        val allNotes = if (currentSearchQuery.isEmpty()) {
+            repo.getAllNotes()
+        } else {
+            repo.searchNotes(currentSearchQuery)
+        }
+
+        if (allNotes.isEmpty()) {
+            emptyView.visibility = View.VISIBLE
+            if (currentSearchQuery.isNotEmpty()) {
+                emptyView.text = "No notes matching \"$currentSearchQuery\""
+            } else {
+                emptyView.text = "No notes yet.\nTap the mic below to start recording."
+            }
+            return
+        } else {
+            emptyView.visibility = View.GONE
+        }
+
+        // Group notes:
+        // 1. PINNED (if any pinned notes exist)
+        // 2. TODAY (if any today notes exist)
+        // 3. YESTERDAY (if any yesterday notes exist)
+        // 4. OLDER DATES
+        val pinned = allNotes.filter { it.isPinned }
+        val unpinned = allNotes.filter { !it.isPinned }
+
+        if (pinned.isNotEmpty()) {
+            notesListLayout.addView(buildSectionHeader("PINNED"))
+            pinned.forEach { notesListLayout.addView(buildNoteCard(it)) }
+        }
+
+        if (unpinned.isNotEmpty()) {
+            val groupedByDay = unpinned.groupBy { Note.formatDateHeader(it.createdAt) }
+            groupedByDay.forEach { (dayLabel, notes) ->
+                notesListLayout.addView(buildSectionHeader(dayLabel.uppercase()))
+                notes.forEach { notesListLayout.addView(buildNoteCard(it)) }
+            }
         }
     }
 
-    private fun addSection(label: String) {
-        notesList.addView(OpenWisprUi.sectionLabel(context, label).apply { setPadding(dp(4), dp(18), dp(4), dp(8)) })
+    private fun buildSectionHeader(title: String) = TextView(context).apply {
+        text = title
+        textSize = 12f
+        setTypeface(typeface, Typeface.BOLD)
+        setTextColor(0xFF888888.toInt())
+        setPadding(dp(4), dp(16), dp(4), dp(8))
     }
 
-    private fun addCard(note: Note) {
+    private fun buildNoteCard(note: Note): View {
         val card = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(12), dp(16), dp(10))
-            background = OpenWisprUi.rounded(OpenWisprUi.SURFACE, 12, context); isClickable = true; isFocusable = true
-            contentDescription = "Voice note at ${Note.formatTime(note.createdAt)}"
-            setOnClickListener { NoteDetailDialog(context, note.id) { refreshNotes() }.show() }
-            layoutParams = LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) }
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            background = GradientDrawable().apply {
+                setColor(0xFF1E1E1E.toInt())
+                cornerRadius = 10 * d
+            }
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(10)
+            }
+            layoutParams = lp
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                NoteDetailDialog(context, note.id) { refreshNotes() }.show()
+            }
         }
-        val header = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        header.addView(TextView(context).apply {
-            text = Note.formatTime(note.createdAt); textSize = 13f; setTextColor(OpenWisprUi.MUTED)
-            layoutParams = LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
-        })
-        if (note.isPinned) header.addView(TextView(context).apply {
-            text = "PINNED"; textSize = 10f; letterSpacing = 0.08f; setTypeface(typeface, Typeface.BOLD); setTextColor(OpenWisprUi.PRIMARY)
-        })
-        card.addView(header)
-        val preview = when (note.transcriptionState) {
-            Note.State.PENDING -> "Transcribing…"
-            Note.State.FAILED -> "Couldn't transcribe\nYour recording is safe."
-            Note.State.COMPLETE -> note.displayTranscript.orEmpty()
-        }
-        card.addView(TextView(context).apply {
-            text = preview; textSize = 16f
-            setTextColor(if (note.transcriptionState == Note.State.FAILED) OpenWisprUi.ERROR else OpenWisprUi.ON_BACKGROUND)
-            setLineSpacing(dp(3).toFloat(), 1f); maxLines = if (note.transcriptionState == Note.State.COMPLETE) 3 else 2
-            ellipsize = TextUtils.TruncateAt.END; textDirection = TEXT_DIRECTION_FIRST_STRONG; textAlignment = TEXT_ALIGNMENT_VIEW_START
-            setPadding(0, dp(8), 0, dp(8))
-        })
-        val footer = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        footer.addView(LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f)
-            addView(ImageView(context).apply {
-                setImageResource(R.drawable.ic_play); setColorFilter(OpenWisprUi.ON_SURFACE)
-                contentDescription = null; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-                layoutParams = LinearLayout.LayoutParams(dp(18), dp(18))
-            })
-            addView(TextView(context).apply {
-                text = Note.formatDuration(note.audioDurationMs); textSize = 13f; setTextColor(OpenWisprUi.ON_SURFACE)
-                setPadding(dp(6), 0, 0, 0)
-            })
-        })
-        if (note.transcriptionState == Note.State.FAILED) footer.addView(MaterialButton(context, null, android.R.attr.borderlessButtonStyle).apply {
-            text = "Retry"; minimumHeight = dp(48); setTextColor(OpenWisprUi.PRIMARY)
-            setOnClickListener { NoteTranscriber.transcribeNoteAsync(context, note.id); refreshNotes() }
-        }) else footer.addView(TextView(context).apply {
-            text = Note.formatFooterTime(note.createdAt); textSize = 12f; setTextColor(OpenWisprUi.MUTED); gravity = Gravity.CENTER_VERTICAL or Gravity.END
-        })
-        card.addView(footer); notesList.addView(card)
-    }
 
-    fun handleBack(): Boolean {
-        if (!searchMode) return false
-        exitSearch()
-        return true
+        // Header: Title and Pin indicator
+        val titleRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val titleTv = TextView(context).apply {
+            text = note.title
+            textSize = 15f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        titleRow.addView(titleTv)
+
+        if (note.isPinned) {
+            val pinIndicator = TextView(context).apply {
+                text = "📌"
+                textSize = 13f
+                setPadding(dp(4), 0, 0, 0)
+            }
+            titleRow.addView(pinIndicator)
+        }
+        card.addView(titleRow)
+
+        // Body content based on transcription state: PENDING, FAILED, COMPLETE
+        when (note.transcriptionState) {
+            Note.State.PENDING -> {
+                val pendingTv = TextView(context).apply {
+                    text = "Transcribing…"
+                    textSize = 14f
+                    setTextColor(0xFF9E9E9E.toInt())
+                    setPadding(0, dp(4), 0, dp(6))
+                }
+                card.addView(pendingTv)
+            }
+            Note.State.FAILED -> {
+                val failedTitle = TextView(context).apply {
+                    text = "Couldn't transcribe"
+                    textSize = 14f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(0xFFEF4444.toInt())
+                    setPadding(0, dp(4), 0, dp(2))
+                }
+                card.addView(failedTitle)
+
+                val failedSub = TextView(context).apply {
+                    text = "Your recording is safe."
+                    textSize = 13f
+                    setTextColor(0xFF9E9E9E.toInt())
+                    setPadding(0, 0, 0, dp(6))
+                }
+                card.addView(failedSub)
+
+                val retryBtn = TextView(context).apply {
+                    text = "Retry transcription"
+                    textSize = 13f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(0xFF3B82F6.toInt())
+                    setPadding(0, 0, 0, dp(6))
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener {
+                        NoteTranscriber.transcribeNoteAsync(context, note.id)
+                        refreshNotes()
+                    }
+                }
+                card.addView(retryBtn)
+            }
+            Note.State.COMPLETE -> {
+                val transcriptPreview = TextView(context).apply {
+                    text = note.displayTranscript ?: ""
+                    textSize = 14f
+                    maxLines = 3
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setTextColor(0xFFE0E0E0.toInt())
+                    textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+                    textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+                    setPadding(0, dp(4), 0, dp(6))
+                }
+                card.addView(transcriptPreview)
+            }
+        }
+
+        // Footer: 🎙 duration · time
+        val footer = TextView(context).apply {
+            text = "🎙 ${Note.formatDuration(note.audioDurationMs)} · ${Note.formatFooterTime(note.createdAt)}"
+            textSize = 12f
+            setTextColor(0xFF757575.toInt())
+        }
+        card.addView(footer)
+
+        return card
     }
 }

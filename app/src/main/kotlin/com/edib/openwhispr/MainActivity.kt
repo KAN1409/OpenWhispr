@@ -17,17 +17,13 @@ import android.view.Gravity
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.graphics.Insets
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.radiobutton.MaterialRadioButton
+import com.google.android.material.tabs.TabLayout
 import java.io.File
 
 class MainActivity : AppCompatActivity() {
@@ -52,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var modelContainer: LinearLayout
     private lateinit var voiceCommandsDetailContainer: LinearLayout
     private lateinit var triggerPhraseRowSub: TextView
+    private lateinit var tabLayout: TabLayout
     private lateinit var statusContainer: LinearLayout
     private lateinit var dictationContainer: LinearLayout
     private lateinit var settingsContainer: LinearLayout
@@ -71,13 +68,7 @@ class MainActivity : AppCompatActivity() {
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         super.onCreate(savedInstanceState)
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = false
-            isAppearanceLightNavigationBars = false
-        }
 
         // Best-effort: lets the background service show its "still running"
         // notification (Android 13+ requires this permission for any
@@ -95,19 +86,52 @@ class MainActivity : AppCompatActivity() {
 
         val outer = vertical(0, 0)
 
-        val settingsTopBar = LinearLayout(this).apply {
+        val backToNotesBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(8), dp(20), 0)
-            minimumHeight = dp(56)
-            addView(OpenWisprUi.iconButton(this@MainActivity, R.drawable.ic_back, "Back to notes") { showNotesScreen() })
-            addView(TextView(this@MainActivity).apply {
-                text = "Settings"; textSize = 22f; setTypeface(typeface, Typeface.BOLD)
-                setTextColor(OpenWisprUi.ON_BACKGROUND); gravity = Gravity.CENTER_VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, dp(56), 1f)
+            setPadding(dp(20), dp(20), dp(20), 0)
+            val backText = TextView(this@MainActivity).apply {
+                text = "← Back to Notes"
+                textSize = 15f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(0xFF3B82F6.toInt())
+                setPadding(0, dp(8), dp(16), dp(8))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { showNotesScreen() }
+            }
+            addView(backText)
+        }
+        outer.addView(backToNotesBar)
+
+        // Top large header (like "Connected devices"), with the app icon
+        // alongside the name.
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(24), dp(64), dp(24), dp(24))
+        }
+        header.addView(ImageView(this).apply {
+            setImageResource(R.mipmap.ic_launcher)
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(12) }
+        })
+        header.addView(TextView(this).apply {
+            text = "OpenWispr"
+            textSize = 32f
+        })
+        outer.addView(header)
+
+        tabLayout = TabLayout(this).apply {
+            addTab(newTab().setText("Status"))
+            addTab(newTab().setText("Dictation"))
+            addTab(newTab().setText("Settings"))
+            addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
+                override fun onTabSelected(tab: TabLayout.Tab) { showTab(tab.position) }
+                override fun onTabUnselected(tab: TabLayout.Tab) {}
+                override fun onTabReselected(tab: TabLayout.Tab) {}
             })
         }
-        outer.addView(settingsTopBar)
+        outer.addView(tabLayout)
 
         statusContainer = vertical(0)
         dictationContainer = vertical(0)
@@ -156,7 +180,7 @@ class MainActivity : AppCompatActivity() {
         statusContainer.addView(accRow)
 
         accCaption = TextView(this).apply {
-            text = "Used to insert dictated text into the active text field."
+            text = "Needed to detect the focused text field and insert the cleaned-up text there."
             textSize = 12f
             setTextColor(attrColor(android.R.attr.textColorSecondary))
             alpha = 0.8f
@@ -179,7 +203,7 @@ class MainActivity : AppCompatActivity() {
         }
         val serviceRow = settingsRow(
             "Background service",
-            "Show the floating microphone while the service is enabled",
+            "Pause the mic overlay without disabling accessibility",
             serviceSwitch
         ) {
             val newVal = !serviceSwitch.isChecked
@@ -293,14 +317,13 @@ class MainActivity : AppCompatActivity() {
             checkForUpdate(force = true)
         })
 
-        outer.addView(sectionHeader("DICTATION"))
-        outer.addView(dictationContainer)
-        outer.addView(sectionHeader("CAPTURE & SETUP"))
         outer.addView(statusContainer)
+        outer.addView(dictationContainer)
         outer.addView(settingsContainer)
+        showTab(0)
 
         settingsScrollView = ScrollView(this).apply {
-            setBackgroundColor(OpenWisprUi.BACKGROUND)
+            setBackgroundColor(attrColor(android.R.attr.colorBackground))
             addView(outer)
             visibility = View.GONE
         }
@@ -310,14 +333,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         rootContainer = FrameLayout(this).apply {
-            setBackgroundColor(OpenWisprUi.BACKGROUND)
             addView(notesView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             addView(settingsScrollView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        }
-        ViewCompat.setOnApplyWindowInsetsListener(rootContainer) { view, insets ->
-            val bars: Insets = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-            insets
         }
 
         setContentView(rootContainer)
@@ -360,7 +377,6 @@ class MainActivity : AppCompatActivity() {
             notesView.cancelRecording()
             return
         }
-        if (::notesView.isInitialized && notesView.visibility == View.VISIBLE && notesView.handleBack()) return
         if (::settingsScrollView.isInitialized && settingsScrollView.visibility == View.VISIBLE) {
             showNotesScreen()
             return
@@ -370,6 +386,12 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onRequestPermissionsResult(c: Int, p: Array<String>, r: IntArray) {
         super.onRequestPermissionsResult(c, p, r); refresh()
+    }
+
+    private fun showTab(index: Int) {
+        statusContainer.visibility = if (index == 0) View.VISIBLE else View.GONE
+        dictationContainer.visibility = if (index == 1) View.VISIBLE else View.GONE
+        settingsContainer.visibility = if (index == 2) View.VISIBLE else View.GONE
     }
 
     // --- Model Rows ---

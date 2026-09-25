@@ -13,9 +13,62 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout OpenWispr
+        uses: actions/checkout@v4
 
-      - name: Set up JDK
+      - name: Checkout patched sherpa-onnx
+        uses: actions/checkout@v4
+        with:
+          repository: k2-fsa/sherpa-onnx
+          ref: 2edc882fe0ba07882daf2cde8bc3bfa5dd968d3b
+          path: upstream-sherpa
+          fetch-depth: 1
+
+      - name: Set up JDK 21 for sherpa AAR
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Build patched sherpa Android arm64 runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd upstream-sherpa
+          export ANDROID_NDK="${ANDROID_NDK_LATEST_HOME}"
+          export SHERPA_ONNX_ENABLE_TTS=OFF
+          export SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=OFF
+          export SHERPA_ONNX_ENABLE_BINARY=OFF
+          export SHERPA_ONNX_ENABLE_C_API=OFF
+          export SHERPA_ONNX_ENABLE_JNI=ON
+          export BUILD_SHARED_LIBS=ON
+          ./build-android-arm64-v8a.sh
+
+      - name: Build patched sherpa AAR
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd upstream-sherpa
+          AAR_JNI="android/SherpaOnnxAar/sherpa_onnx/src/main/jniLibs"
+          rm -rf "$AAR_JNI"
+          mkdir -p "$AAR_JNI/arm64-v8a"
+          cp build-android-arm64-v8a/install/lib/libonnxruntime.so "$AAR_JNI/arm64-v8a/"
+          cp build-android-arm64-v8a/install/lib/libsherpa-onnx-jni.so "$AAR_JNI/arm64-v8a/"
+          cd android/SherpaOnnxAar
+          chmod +x gradlew
+          ./gradlew :sherpa_onnx:assembleRelease --no-daemon
+          test -s sherpa_onnx/build/outputs/aar/sherpa_onnx-release.aar
+          cp sherpa_onnx/build/outputs/aar/sherpa_onnx-release.aar "$GITHUB_WORKSPACE/app/libs/sherpa-onnx-1.13.8.aar"
+
+      - name: Verify patched runtime source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(git -C upstream-sherpa rev-parse HEAD)" = "2edc882fe0ba07882daf2cde8bc3bfa5dd968d3b"
+          grep -q "ApplyInverseTextNormalization" upstream-sherpa/sherpa-onnx/csrc/offline-recognizer-whisper-impl.h
+          ls -lh app/libs/sherpa-onnx-1.13.8.aar
+
+      - name: Set up JDK 17 for OpenWispr
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -50,11 +103,11 @@ jobs:
       - name: Stage APK
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/*.apk dist/OpenWispr-3.13.0-benchmark-debug.apk
+          cp app/build/outputs/apk/debug/*.apk dist/OpenWispr-3.13.0-patched-whisper-debug.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openwispr-3.13.0-benchmark-apk
-          path: dist/OpenWispr-3.13.0-benchmark-debug.apk
+          name: openwispr-3.13.0-patched-whisper-apk
+          path: dist/OpenWispr-3.13.0-patched-whisper-debug.apk
           if-no-files-found: error

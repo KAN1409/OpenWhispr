@@ -415,7 +415,9 @@ class NotesTimelineView(
                     prepared.wavFile,
                     prepared.durationMs
                 )
-                repo.preserveImportedSource(note.id, prepared.sourceCopy)
+                runCatching {
+                    repo.preserveImportedSource(note.id, prepared.sourceCopy)
+                }
                 val importSummary = prepared.summary
                 NoteTranscriber.transcribeNoteAsync(context.applicationContext, note.id)
 

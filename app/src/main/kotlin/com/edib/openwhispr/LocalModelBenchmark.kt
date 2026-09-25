@@ -35,68 +35,49 @@ object LocalModelBenchmark {
     }
 
     private val scheduled = ConcurrentHashMap.newKeySet<String>()
+    private val cancelled = ConcurrentHashMap.newKeySet<String>()
     private val listeners = CopyOnWriteArraySet<(String) -> Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
     fun requestIfEnabled(context: Context, noteId: String) {
-        val prefs = context.getSharedPreferences("openwhispr", Context.MODE_PRIVATE)
+        val appContext = context.applicationContext
+        val prefs = appContext.getSharedPreferences("openwhispr", Context.MODE_PRIVATE)
         if (!prefs.getBoolean(PREF_ENABLED, false)) return
-        if (BenchmarkStore.read(context, noteId) != null) return
+        if (BenchmarkStore.read(appContext, noteId) != null) return
 
-        BenchmarkStore.write(
-            context,
-            BenchmarkSnapshot(
-                noteId = noteId,
-                state = BenchmarkRunState.QUEUED,
-                requestedAt = System.currentTimeMillis(),
-                results = MODEL_CATALOG.map { model ->
-                    BenchmarkModelResult(
-                        archive = model.archive,
-                        modelName = model.name
-                    )
-                }
-            )
-        )
+        cancelled.remove(noteId)
+        BenchmarkStore.write(appContext, newQueuedSnapshot(noteId))
         notifyChanged(noteId)
     }
 
     fun runIfRequested(context: Context, noteId: String) {
-        val snapshot = BenchmarkStore.read(context, noteId) ?: return
+        val appContext = context.applicationContext
+        val snapshot = BenchmarkStore.read(appContext, noteId) ?: return
         if (snapshot.state == BenchmarkRunState.COMPLETE) return
-        schedule(context.applicationContext, noteId, 0L)
+        schedule(appContext, noteId, 0L)
     }
 
     fun resumeRequested(context: Context, notes: List<Note>) {
+        val appContext = context.applicationContext
         notes.forEach { note ->
-            val snapshot = BenchmarkStore.read(context, note.id) ?: return@forEach
+            val snapshot = BenchmarkStore.read(appContext, note.id) ?: return@forEach
             if (note.transcriptionState == Note.State.PENDING) return@forEach
             if (snapshot.state == BenchmarkRunState.COMPLETE) return@forEach
-            schedule(context.applicationContext, note.id, 0L)
+            schedule(appContext, note.id, 0L)
         }
     }
 
     fun rerun(context: Context, noteId: String) {
+        val appContext = context.applicationContext
         if (scheduled.contains(noteId)) return
-        BenchmarkStore.write(
-            context,
-            BenchmarkSnapshot(
-                noteId = noteId,
-                state = BenchmarkRunState.QUEUED,
-                requestedAt = System.currentTimeMillis(),
-                results = MODEL_CATALOG.map { model ->
-                    BenchmarkModelResult(
-                        archive = model.archive,
-                        modelName = model.name
-                    )
-                }
-            )
-        )
+        cancelled.remove(noteId)
+        BenchmarkStore.write(appContext, newQueuedSnapshot(noteId))
         notifyChanged(noteId)
-        schedule(context.applicationContext, noteId, 0L)
+        schedule(appContext, noteId, 0L)
     }
 
     fun getSnapshot(context: Context, noteId: String): BenchmarkSnapshot? =
-        BenchmarkStore.read(context, noteId)
+        BenchmarkStore.read(context.applicationContext, noteId)
 
     fun isRunning(noteId: String? = null): Boolean =
         if (noteId == null) scheduled.isNotEmpty() else scheduled.contains(noteId)
@@ -109,22 +90,37 @@ object LocalModelBenchmark {
         listeners.remove(listener)
     }
 
+    /** Cancel any in-flight benchmark and remove its sidecar evidence. */
     fun deleteResults(context: Context, noteId: String) {
-        BenchmarkStore.delete(context, noteId)
-        scheduled.remove(noteId)
+        cancelled.add(noteId)
+        BenchmarkStore.delete(context.applicationContext, noteId)
         notifyChanged(noteId)
     }
 
+    private fun newQueuedSnapshot(noteId: String) = BenchmarkSnapshot(
+        noteId = noteId,
+        state = BenchmarkRunState.QUEUED,
+        requestedAt = System.currentTimeMillis(),
+        results = MODEL_CATALOG.map { model ->
+            BenchmarkModelResult(
+                archive = model.archive,
+                modelName = model.name
+            )
+        }
+    )
+
     private fun schedule(context: Context, noteId: String, delayMs: Long) {
+        if (cancelled.contains(noteId)) return
         if (!scheduled.add(noteId)) return
         executor.schedule({ runBenchmark(context, noteId) }, delayMs, TimeUnit.MILLISECONDS)
     }
 
     private fun runBenchmark(context: Context, noteId: String) {
-        var overlayPaused = false
         var retryNeeded = false
 
         try {
+            if (cancelled.contains(noteId)) return
+
             val repo = NotesRepository.getInstance(context)
             val note = repo.getNote(noteId)
             if (note == null) {
@@ -132,7 +128,7 @@ object LocalModelBenchmark {
                 return
             }
 
-            // The primary transcript always wins scheduling priority.
+            // Primary transcription always wins scheduling priority.
             if (note.transcriptionState == Note.State.PENDING) {
                 markQueued(context, noteId)
                 retryNeeded = true
@@ -145,139 +141,159 @@ object LocalModelBenchmark {
                 return
             }
 
-            // The accessibility overlay can keep the selected local model resident.
-            // Release it first so a benchmark model is never loaded on top of it.
-            WhisperAccessibilityService.instance?.let { service ->
-                overlayPaused = service.pauseLocalModelForBenchmark()
-                if (!overlayPaused) {
-                    markQueued(context, noteId)
-                    retryNeeded = true
-                    return
-                }
-            }
-
-            var snapshot = BenchmarkStore.read(context, noteId) ?: return
-            snapshot = snapshot.copy(
-                state = BenchmarkRunState.RUNNING,
-                startedAt = snapshot.startedAt ?: System.currentTimeMillis(),
-                finishedAt = null,
-                results = snapshot.results.map { result ->
-                    // A RUNNING result left on disk means the previous process ended
-                    // inside that model. Do not auto-repeat it and risk a crash loop.
-                    if (result.state == BenchmarkModelState.RUNNING) {
-                        result.copy(
-                            state = BenchmarkModelState.FAILED,
-                            error = "Previous app process ended while this model was running"
-                        )
-                    } else {
-                        result
-                    }
-                }
-            )
-            BenchmarkStore.write(context, snapshot)
-            notifyChanged(noteId)
-
             val samples = decodeAppWav(audioFile.readBytes())
 
-            for (model in MODEL_CATALOG) {
-                snapshot = BenchmarkStore.read(context, noteId) ?: return
-                val previous = snapshot.results.firstOrNull { it.archive == model.archive }
-                if (previous?.state == BenchmarkModelState.COMPLETE) continue
-                if (previous?.error?.startsWith("Previous app process ended") == true) continue
+            /*
+             * Hold the same process-wide sherpa lock for the entire benchmark.
+             * This prevents the accessibility overlay or primary Voice Note path
+             * from reloading a resident model between benchmark models. Existing
+             * wrappers remain valid: their native recognizers are evicted here and
+             * lazily reload on their next real transcription.
+             */
+            LocalTranscriber.exclusive {
+                LocalTranscriber.releaseIdleNativeMemory()
 
-                if (!ModelDownloader.isInstalled(context, model)) {
+                if (cancelled.contains(noteId)) return@exclusive
+
+                var snapshot = BenchmarkStore.read(context, noteId) ?: return@exclusive
+                snapshot = snapshot.copy(
+                    state = BenchmarkRunState.RUNNING,
+                    startedAt = snapshot.startedAt ?: System.currentTimeMillis(),
+                    finishedAt = null,
+                    results = snapshot.results.map { result ->
+                        // RUNNING left on disk means the previous process ended while
+                        // this model was active. Do not auto-repeat it and crash-loop.
+                        if (result.state == BenchmarkModelState.RUNNING) {
+                            result.copy(
+                                state = BenchmarkModelState.FAILED,
+                                error = "Previous app process ended while this model was running"
+                            )
+                        } else {
+                            result
+                        }
+                    }
+                )
+                writeIfActive(context, snapshot) ?: return@exclusive
+
+                for (model in MODEL_CATALOG) {
+                    if (cancelled.contains(noteId)) return@exclusive
+                    if (repo.getNote(noteId) == null) return@exclusive
+
+                    snapshot = BenchmarkStore.read(context, noteId) ?: return@exclusive
+                    val previous = snapshot.results.firstOrNull { it.archive == model.archive }
+
+                    if (previous?.state == BenchmarkModelState.COMPLETE) continue
+                    if (previous?.error?.startsWith("Previous app process ended") == true) continue
+
+                    if (!ModelDownloader.isInstalled(context, model)) {
+                        snapshot = replaceModelResult(
+                            snapshot,
+                            BenchmarkModelResult(
+                                archive = model.archive,
+                                modelName = model.name,
+                                state = BenchmarkModelState.NOT_INSTALLED
+                            )
+                        )
+                        writeIfActive(context, snapshot) ?: return@exclusive
+                        continue
+                    }
+
                     snapshot = replaceModelResult(
                         snapshot,
                         BenchmarkModelResult(
                             archive = model.archive,
                             modelName = model.name,
-                            state = BenchmarkModelState.NOT_INSTALLED
+                            state = BenchmarkModelState.RUNNING
                         )
                     )
-                    BenchmarkStore.write(context, snapshot)
-                    notifyChanged(noteId)
-                    continue
-                }
+                    writeIfActive(context, snapshot) ?: return@exclusive
 
-                snapshot = replaceModelResult(
-                    snapshot,
-                    BenchmarkModelResult(
-                        archive = model.archive,
-                        modelName = model.name,
-                        state = BenchmarkModelState.RUNNING
-                    )
-                )
-                BenchmarkStore.write(context, snapshot)
-                notifyChanged(noteId)
-
-                val t0 = System.currentTimeMillis()
-                val result = try {
-                    val text = LocalTranscriber.exclusive {
+                    val t0 = System.currentTimeMillis()
+                    val result = try {
                         val transcriber = LocalTranscriber.create(context, model.archive)
                             ?: throw IllegalStateException("Unable to load ${model.name}")
-                        try {
+                        val text = try {
                             transcriber.transcribe(samples, 16000)
                         } finally {
                             transcriber.close()
                         }
+
+                        BenchmarkModelResult(
+                            archive = model.archive,
+                            modelName = model.name,
+                            state = BenchmarkModelState.COMPLETE,
+                            transcript = text,
+                            elapsedMs = System.currentTimeMillis() - t0
+                        )
+                    } catch (e: LinkageError) {
+                        Log.e(TAG, "${model.name} native runtime error", e)
+                        BenchmarkModelResult(
+                            archive = model.archive,
+                            modelName = model.name,
+                            state = BenchmarkModelState.FAILED,
+                            error = e.message ?: "Native runtime unavailable",
+                            elapsedMs = System.currentTimeMillis() - t0
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "${model.name} benchmark failed", e)
+                        BenchmarkModelResult(
+                            archive = model.archive,
+                            modelName = model.name,
+                            state = BenchmarkModelState.FAILED,
+                            error = e.message ?: "Benchmark failed",
+                            elapsedMs = System.currentTimeMillis() - t0
+                        )
                     }
-                    BenchmarkModelResult(
-                        archive = model.archive,
-                        modelName = model.name,
-                        state = BenchmarkModelState.COMPLETE,
-                        transcript = text,
-                        elapsedMs = System.currentTimeMillis() - t0
-                    )
-                } catch (e: LinkageError) {
-                    Log.e(TAG, "${model.name} native runtime error", e)
-                    BenchmarkModelResult(
-                        archive = model.archive,
-                        modelName = model.name,
-                        state = BenchmarkModelState.FAILED,
-                        error = e.message ?: "Native runtime unavailable",
-                        elapsedMs = System.currentTimeMillis() - t0
-                    )
-                } catch (e: Exception) {
-                    Log.e(TAG, "${model.name} benchmark failed", e)
-                    BenchmarkModelResult(
-                        archive = model.archive,
-                        modelName = model.name,
-                        state = BenchmarkModelState.FAILED,
-                        error = e.message ?: "Benchmark failed",
-                        elapsedMs = System.currentTimeMillis() - t0
-                    )
+
+                    if (cancelled.contains(noteId)) return@exclusive
+                    snapshot = replaceModelResult(snapshot, result)
+                    writeIfActive(context, snapshot) ?: return@exclusive
                 }
 
-                snapshot = replaceModelResult(snapshot, result)
-                BenchmarkStore.write(context, snapshot)
-                notifyChanged(noteId)
-            }
-
-            snapshot = BenchmarkStore.read(context, noteId) ?: return
-            BenchmarkStore.write(
-                context,
-                snapshot.copy(
-                    state = BenchmarkRunState.COMPLETE,
-                    finishedAt = System.currentTimeMillis()
+                if (cancelled.contains(noteId)) return@exclusive
+                snapshot = BenchmarkStore.read(context, noteId) ?: return@exclusive
+                writeIfActive(
+                    context,
+                    snapshot.copy(
+                        state = BenchmarkRunState.COMPLETE,
+                        finishedAt = System.currentTimeMillis()
+                    )
                 )
-            )
-            notifyChanged(noteId)
+
+                // Leave resident wrappers alive but native memory cold after testing.
+                LocalTranscriber.releaseIdleNativeMemory()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Benchmark failed for note $noteId", e)
-            failWholeRun(context, noteId, e.message ?: "Benchmark failed")
+            if (!cancelled.contains(noteId)) {
+                failWholeRun(context, noteId, e.message ?: "Benchmark failed")
+            }
         } finally {
-            if (overlayPaused) {
-                WhisperAccessibilityService.instance?.restoreLocalModelAfterBenchmark()
-            }
             scheduled.remove(noteId)
-            if (retryNeeded) {
+
+            if (retryNeeded && !cancelled.contains(noteId)) {
                 schedule(context, noteId, RETRY_DELAY_MS)
+            } else if (cancelled.contains(noteId)) {
+                BenchmarkStore.delete(context, noteId)
+                cancelled.remove(noteId)
             }
+
             notifyChanged(noteId)
         }
     }
 
+    private fun writeIfActive(
+        context: Context,
+        snapshot: BenchmarkSnapshot
+    ): BenchmarkSnapshot? {
+        if (cancelled.contains(snapshot.noteId)) return null
+        BenchmarkStore.write(context, snapshot)
+        notifyChanged(snapshot.noteId)
+        return snapshot
+    }
+
     private fun markQueued(context: Context, noteId: String) {
+        if (cancelled.contains(noteId)) return
         val snapshot = BenchmarkStore.read(context, noteId) ?: return
         if (snapshot.state != BenchmarkRunState.COMPLETE) {
             BenchmarkStore.write(context, snapshot.copy(state = BenchmarkRunState.QUEUED))
@@ -295,6 +311,7 @@ object LocalModelBenchmark {
     )
 
     private fun failWholeRun(context: Context, noteId: String, error: String) {
+        if (cancelled.contains(noteId)) return
         val current = BenchmarkStore.read(context, noteId) ?: return
         BenchmarkStore.write(
             context,
@@ -337,6 +354,8 @@ object LocalModelBenchmark {
         require(String(wav, 36, 4, Charsets.US_ASCII) == "data")
 
         val dataSize = u32(40).coerceAtMost(wav.size - 44)
+        require(dataSize >= 0) { "Invalid WAV data size" }
+
         val samples = FloatArray(dataSize / 2)
         for (i in samples.indices) {
             val lo = wav[44 + i * 2].toInt() and 0xff
@@ -402,6 +421,7 @@ private object BenchmarkStore {
                 output.flush()
                 output.fd.sync()
             }
+
             try {
                 Files.move(
                     staging.toPath(),
@@ -453,9 +473,13 @@ private object BenchmarkStore {
     }
 
     private fun decode(json: JSONObject): BenchmarkSnapshot {
-        require(json.optInt("version", -1) == VERSION) { "Unsupported benchmark file version" }
+        require(json.optInt("version", -1) == VERSION) {
+            "Unsupported benchmark file version"
+        }
+
         val resultsJson = json.getJSONArray("results")
         val results = ArrayList<BenchmarkModelResult>(resultsJson.length())
+
         for (i in 0 until resultsJson.length()) {
             val item = resultsJson.getJSONObject(i)
             results += BenchmarkModelResult(
@@ -467,6 +491,7 @@ private object BenchmarkStore {
                 elapsedMs = item.optLong("elapsedMs", 0L)
             )
         }
+
         return BenchmarkSnapshot(
             noteId = json.getString("noteId"),
             state = BenchmarkRunState.valueOf(json.getString("state")),

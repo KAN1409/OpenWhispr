@@ -137,6 +137,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     // Local transcription engine (loaded lazily)
+    @Volatile
     private var localTranscriber: LocalTranscriber? = null
 
     private val dp get() = resources.displayMetrics.density
@@ -170,6 +171,9 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        runCatching { localTranscriber?.close() }
+            .onFailure { Log.w(TAG, "Failed to release local model on destroy", it) }
+        localTranscriber = null
         if (state == State.RECORDING && currentSessionType == SessionType.NOTE) {
             stopNoteRecording()
         } else {
@@ -233,14 +237,18 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     private fun initLocalModel() {
         // A corrupted/incompatible model file or a native (sherpa-onnx)
-        // load failure here must not be allowed to crash the process --
-        // that takes the whole accessibility service down with it.
+        // load failure here must not be allowed to crash the process.
+        val previous = localTranscriber
+        localTranscriber = null
+        runCatching { previous?.close() }
+            .onFailure { Log.w(TAG, "Failed to release previous local model", it) }
+
         try {
             val modelName = prefs().getString("model_name", "") ?: ""
-            if (modelName.isBlank()) {
-                localTranscriber = null
+            localTranscriber = if (modelName.isBlank()) {
+                null
             } else {
-                localTranscriber = LocalTranscriber.create(this, modelName)
+                LocalTranscriber.create(this, modelName)
             }
             if (localTranscriber != null) {
                 Log.i(TAG, "Local transcription ready")
@@ -255,6 +263,22 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     /** Reload local model (called from MainActivity when settings change) */
     fun reloadModel() { thread { initLocalModel() } }
+
+    /**
+     * Reuse the already-resident selected model for Voice Notes when the
+     * accessibility service has it loaded. This avoids paying Large-v3 model
+     * initialization twice and avoids a second native copy in memory.
+     */
+    fun transcribeWithResidentLocalModel(
+        modelName: String,
+        samples: FloatArray,
+        sampleRate: Int
+    ): String? {
+        val selected = prefs().getString("model_name", "") ?: ""
+        if (selected != modelName) return null
+        val resident = localTranscriber ?: return null
+        return resident.transcribe(samples, sampleRate)
+    }
 
     // --- Overlay visibility (multi-signal, OR'd together) ---
 

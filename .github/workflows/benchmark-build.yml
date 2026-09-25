@@ -1,0 +1,113 @@
+name: Benchmark APK Build
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout OpenWispr
+        uses: actions/checkout@v4
+
+      - name: Checkout patched sherpa-onnx
+        uses: actions/checkout@v4
+        with:
+          repository: k2-fsa/sherpa-onnx
+          ref: 2edc882fe0ba07882daf2cde8bc3bfa5dd968d3b
+          path: upstream-sherpa
+          fetch-depth: 1
+
+      - name: Set up JDK 21 for sherpa AAR
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Build patched sherpa Android arm64 runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd upstream-sherpa
+          export ANDROID_NDK="${ANDROID_NDK_LATEST_HOME}"
+          export SHERPA_ONNX_ENABLE_TTS=OFF
+          export SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=OFF
+          export SHERPA_ONNX_ENABLE_BINARY=OFF
+          export SHERPA_ONNX_ENABLE_C_API=OFF
+          export SHERPA_ONNX_ENABLE_JNI=ON
+          export BUILD_SHARED_LIBS=ON
+          ./build-android-arm64-v8a.sh
+
+      - name: Build patched sherpa AAR
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd upstream-sherpa
+          AAR_JNI="android/SherpaOnnxAar/sherpa_onnx/src/main/jniLibs"
+          rm -rf "$AAR_JNI"
+          mkdir -p "$AAR_JNI/arm64-v8a"
+          cp build-android-arm64-v8a/install/lib/libonnxruntime.so "$AAR_JNI/arm64-v8a/"
+          cp build-android-arm64-v8a/install/lib/libsherpa-onnx-jni.so "$AAR_JNI/arm64-v8a/"
+          cd android/SherpaOnnxAar
+          chmod +x gradlew
+          ./gradlew :sherpa_onnx:assembleRelease --no-daemon
+          test -s sherpa_onnx/build/outputs/aar/sherpa_onnx-release.aar
+          cp sherpa_onnx/build/outputs/aar/sherpa_onnx-release.aar "$GITHUB_WORKSPACE/app/libs/sherpa-onnx-1.13.8.aar"
+
+      - name: Verify patched runtime source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(git -C upstream-sherpa rev-parse HEAD)" = "2edc882fe0ba07882daf2cde8bc3bfa5dd968d3b"
+          grep -q "ApplyInverseTextNormalization" upstream-sherpa/sherpa-onnx/csrc/offline-recognizer-whisper-impl.h
+          ls -lh app/libs/sherpa-onnx-1.13.8.aar
+
+      - name: Set up JDK 17 for OpenWispr
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Ensure Android SDK platform 35 is installed
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/sdk}}"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n1)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(command -v sdkmanager || true)"
+          fi
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Verify APK
+        run: |
+          APK="$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -type f | head -n1)"
+          test -n "$APK"
+          test -s "$APK"
+          sha256sum "$APK"
+
+      - name: Stage APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/*.apk dist/OpenWispr-3.14.0-audio-import-debug.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwispr-3.14.0-audio-import-apk
+          path: dist/OpenWispr-3.14.0-audio-import-debug.apk
+          if-no-files-found: error

@@ -21,25 +21,30 @@ object NoteTranscriber {
     fun resumePendingNotes(context: Context) {
         val repo = NotesRepository.getInstance(context)
         repo.reconcileAudioIntegrity()
-        repo.getAllNotes()
+        val notes = repo.getAllNotes()
+        notes
             .filter { it.transcriptionState == Note.State.PENDING }
             .forEach { transcribeNoteAsync(context, it.id) }
+        LocalModelBenchmark.resumeRequested(context, notes)
     }
 
     fun transcribeNoteAsync(context: Context, noteId: String) {
         if (!inFlight.add(noteId)) return
         val repo = NotesRepository.getInstance(context)
         val note = repo.getNote(noteId) ?: run {
-            inFlight.remove(noteId)
+            finishPrimary(context, noteId)
             return
         }
 
+        // Central hook so every Voice Note transcription path (in-app, overlay,
+        // imports/retries) can opt into benchmark mode without changing callers.
+        LocalModelBenchmark.requestIfEnabled(context.applicationContext, noteId)
         repo.markTranscriptionPending(noteId)
 
         val audioFile = File(note.audioPath)
         if (!audioFile.exists() || audioFile.length() <= 44L) {
             repo.markTranscriptionFailed(noteId, "Recording audio file missing or empty")
-            inFlight.remove(noteId)
+            finishPrimary(context, noteId)
             return
         }
 
@@ -52,15 +57,12 @@ object NoteTranscriber {
 
                 if (useLocal) {
                     val modelName = prefs.getString("model_name", "") ?: ""
-                    val local = if (modelName.isNotBlank()) {
-                        LocalTranscriber.create(context, modelName)
-                    } else {
-                        null
-                    }
-
-                    if (local != null) {
-                        // Extract PCM from WAV (skip 44-byte header)
-                        val pcm = if (wavBytes.size > 44) wavBytes.copyOfRange(44, wavBytes.size) else ByteArray(0)
+                    if (modelName.isNotBlank()) {
+                        val pcm = if (wavBytes.size > 44) {
+                            wavBytes.copyOfRange(44, wavBytes.size)
+                        } else {
+                            ByteArray(0)
+                        }
                         val samples = FloatArray(pcm.size / 2)
                         for (i in samples.indices) {
                             val lo = pcm[i * 2].toInt() and 0xFF
@@ -68,23 +70,43 @@ object NoteTranscriber {
                             samples[i] = ((hi shl 8) or lo).toShort().toFloat() / 32768f
                         }
 
-                        val rawText = local.transcribe(samples, 16000)
-                        if (rawText.isNotBlank()) {
-                            repo.markTranscriptionSuccess(noteId, rawText)
-                        } else {
-                            repo.markTranscriptionFailed(noteId, "No speech detected")
+                        val residentText = WhisperAccessibilityService.instance
+                            ?.transcribeWithResidentLocalModel(modelName, samples, 16000)
+
+                        val rawText = residentText ?: LocalTranscriber.exclusive {
+                            val local = LocalTranscriber.create(context, modelName)
+                            if (local == null) {
+                                null
+                            } else {
+                                try {
+                                    local.transcribe(samples, 16000)
+                                } finally {
+                                    local.close()
+                                }
+                            }
                         }
-                        inFlight.remove(noteId)
-                        return@thread
+
+                        if (rawText != null) {
+                            if (rawText.isNotBlank()) {
+                                repo.markTranscriptionSuccess(noteId, rawText)
+                            } else {
+                                repo.markTranscriptionFailed(noteId, "No speech detected")
+                            }
+                            finishPrimary(context, noteId)
+                            return@thread
+                        }
                     }
-                    // If local model is not loaded, fall back to cloud if key available
+                    // If the selected local model cannot be loaded, preserve the
+                    // existing behavior and fall back to Groq when an API key exists.
                 }
 
-                // Cloud transcription via Groq
                 val apiKey = prefs.getString("api_key", "") ?: ""
                 if (apiKey.isBlank()) {
-                    repo.markTranscriptionFailed(noteId, "No Groq API key configured. Tap Settings to set API key or download a local model.")
-                    inFlight.remove(noteId)
+                    repo.markTranscriptionFailed(
+                        noteId,
+                        "No Groq API key configured. Tap Settings to set API key or download a local model."
+                    )
+                    finishPrimary(context, noteId)
                     return@thread
                 }
 
@@ -93,18 +115,32 @@ object NoteTranscriber {
                         if (result.text != null && result.text.isNotBlank()) {
                             repo.markTranscriptionSuccess(noteId, result.text)
                         } else {
-                            val err = result.error ?: "Transcription produced no text"
-                            repo.markTranscriptionFailed(noteId, err)
+                            repo.markTranscriptionFailed(
+                                noteId,
+                                result.error ?: "Transcription produced no text"
+                            )
                         }
                     } finally {
-                        inFlight.remove(noteId)
+                        finishPrimary(context, noteId)
                     }
                 }
+            } catch (e: LinkageError) {
+                Log.e(TAG, "Native transcription failed for note $noteId", e)
+                repo.markTranscriptionFailed(
+                    noteId,
+                    e.message ?: "Native transcription runtime error"
+                )
+                finishPrimary(context, noteId)
             } catch (e: Exception) {
                 Log.e(TAG, "Transcription failed for note $noteId", e)
                 repo.markTranscriptionFailed(noteId, e.message ?: "Transcription error")
-                inFlight.remove(noteId)
+                finishPrimary(context, noteId)
             }
         }
+    }
+
+    private fun finishPrimary(context: Context, noteId: String) {
+        inFlight.remove(noteId)
+        LocalModelBenchmark.runIfRequested(context.applicationContext, noteId)
     }
 }

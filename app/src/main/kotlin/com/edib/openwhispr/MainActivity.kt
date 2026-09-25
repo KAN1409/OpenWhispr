@@ -217,6 +217,7 @@ class MainActivity : AppCompatActivity() {
         modelContainer.addView(sectionHeader("Local models"))
         for (m in MODEL_CATALOG) modelContainer.addView(buildModelRow(m))
         dictationContainer.addView(modelContainer)
+        dictationContainer.addView(BenchmarkUi.settingsRow(this))
 
         dictationContainer.addView(sectionHeader("POST-PROCESSING"))
 
@@ -310,9 +311,11 @@ class MainActivity : AppCompatActivity() {
             visibility = View.GONE
         }
 
-        notesView = NotesTimelineView(this) {
-            showSettingsScreen()
-        }
+        notesView = NotesTimelineView(
+            this,
+            onOpenSettings = { showSettingsScreen() },
+            onImportAudio = { launchAudioImport() }
+        )
 
         rootContainer = FrameLayout(this).apply {
             addView(notesView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -331,6 +334,36 @@ class MainActivity : AppCompatActivity() {
         }
 
         refresh()
+    }
+
+    private fun launchAudioImport() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "audio/*"
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            )
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(intent, REQUEST_IMPORT_AUDIO)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_IMPORT_AUDIO && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            runCatching {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            if (::notesView.isInitialized) {
+                notesView.importAudio(uri)
+            }
+        }
     }
 
     override fun onResume() {
@@ -922,5 +955,6 @@ class MainActivity : AppCompatActivity() {
         private const val LP_WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
         private const val DOT_GREEN = 0xFF34C759.toInt()
         private const val DOT_RED = 0xFFEF4444.toInt()
+        private const val REQUEST_IMPORT_AUDIO = 41
     }
 }

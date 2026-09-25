@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.UUID
 
@@ -304,6 +305,55 @@ class NotesRepository(
     }
 
     /**
+     * Imports an already-canonical PCM16 mono 16-kHz WAV without loading the
+     * whole file into memory. The source remains untouched.
+     */
+    fun createAndSaveNoteFromCanonicalWavFile(sourceWav: File, durationMs: Long): Note {
+        require(sourceWav.isFile && sourceWav.length() > 44L) { "Imported WAV is empty" }
+        require(isCompleteWav(sourceWav)) { "Imported WAV is incomplete" }
+
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val audioFile = File(notesDir, "$id.wav")
+
+        writeDurably(audioFile, sourceWav)
+
+        val note = Note(
+            id = id,
+            createdAt = now,
+            modifiedAt = now,
+            audioPath = audioFile.absolutePath,
+            audioDurationMs = durationMs,
+            originalTranscript = null,
+            editedTranscript = null,
+            transcriptionState = Note.State.PENDING,
+            isPinned = false
+        )
+
+        val inserted = storage.insert(note)
+        if (!inserted) {
+            throw IllegalStateException(
+                "Failed to insert imported note into database; audio retained at ${audioFile.absolutePath}"
+            )
+        }
+
+        notifyListeners()
+        return note
+    }
+
+    /**
+     * Keeps the exact imported source beside the canonical ASR WAV. It is not
+     * decoded or rewritten and is intentionally outside the playable .wav
+     * reconciliation path.
+     */
+    fun preserveImportedSource(noteId: String, source: File): File {
+        require(source.isFile && source.length() > 0L) { "Imported source is empty" }
+        val destination = File(notesDir, "$noteId.source")
+        writeDurably(destination, source)
+        return destination
+    }
+
+    /**
      * Durably stores complete WAV bytes directly.
      */
     fun createAndSaveNoteFromWav(wavBytes: ByteArray, durationMs: Long): Note {
@@ -332,6 +382,30 @@ class NotesRepository(
 
         notifyListeners()
         return note
+    }
+
+    private fun writeDurably(destination: File, source: File) {
+        val directory = destination.parentFile
+            ?: throw IllegalStateException("Recording has no parent directory")
+        if ((!directory.exists() && !directory.mkdirs()) || !directory.isDirectory) {
+            throw IllegalStateException("Unable to create notes directory")
+        }
+        val staging = File(directory, "${destination.name}.part")
+        try {
+            FileInputStream(source).use { input ->
+                FileOutputStream(staging).use { out ->
+                    input.copyTo(out, 64 * 1024)
+                    out.flush()
+                    out.fd.sync()
+                }
+            }
+            if (!staging.renameTo(destination)) {
+                throw IllegalStateException("Unable to commit imported recording")
+            }
+        } catch (e: Exception) {
+            staging.delete()
+            throw e
+        }
     }
 
     private fun writeDurably(destination: File, bytes: ByteArray) {
@@ -444,7 +518,7 @@ class NotesRepository(
         val note = storage.get(id) ?: return false
         val updated = note.copy(
             // The first ASR result is evidence. Retries must never rewrite it.
-            originalTranscript = note.originalTranscript ?: rawTranscript.trim(),
+            originalTranscript = note.originalTranscript ?: rawTranscript,
             transcriptionState = Note.State.COMPLETE,
             modifiedAt = System.currentTimeMillis(),
             errorMessage = null
@@ -519,6 +593,11 @@ class NotesRepository(
         val ok = storage.delete(id)
         if (ok) {
             tombstone.delete()
+            File(notesDir, "$id.source").delete()
+            context?.let { appContext ->
+                runCatching { LocalModelBenchmark.deleteResults(appContext, id) }
+                    .onFailure { Log.w("NotesRepository", "Unable to delete benchmark sidecar for $id", it) }
+            }
             notifyListeners()
         } else if (tombstone.exists()) {
             tombstone.renameTo(audio)

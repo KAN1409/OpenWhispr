@@ -23,7 +23,8 @@ import java.util.Locale
  */
 class NotesTimelineView(
     context: Context,
-    private val onOpenSettings: () -> Unit
+    private val onOpenSettings: () -> Unit,
+    private val onImportAudio: () -> Unit
 ) : FrameLayout(context) {
 
     private val repo = NotesRepository.getInstance(context)
@@ -35,6 +36,8 @@ class NotesTimelineView(
     private val searchEditText: EditText
     private val emptyView: TextView
     private val recordFab: FloatingActionButton
+    private val importBtn: MaterialButton
+    private val importingOverlay: LinearLayout
 
     // Minimal In-App Recording Screen/Overlay
     private val recordingOverlay: LinearLayout
@@ -168,7 +171,7 @@ class NotesTimelineView(
         container.addView(notesListLayout)
 
         emptyView = TextView(context).apply {
-            text = "No voice notes yet\n\nYour voice, captured.\nTap the microphone to record your first note."
+            text = "No voice notes yet\n\nRecord a new note or import existing audio."
             textSize = 16f
             setTextColor(OpenWisprUi.TEXT_SECONDARY)
             gravity = Gravity.CENTER
@@ -179,6 +182,25 @@ class NotesTimelineView(
 
         scrollView.addView(container)
         addView(scrollView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+
+        // ================= IMPORT AUDIO =================
+        importBtn = MaterialButton(context).apply {
+            text = "Import audio"
+            textSize = 13f
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFF2A2A2A.toInt())
+            cornerRadius = dp(22)
+            contentDescription = "Import an existing voice note"
+            minHeight = dp(48)
+            val lp = LayoutParams(LayoutParams.WRAP_CONTENT, dp(48)).apply {
+                gravity = Gravity.BOTTOM or Gravity.END
+                marginEnd = dp(96)
+                bottomMargin = dp(28)
+            }
+            layoutParams = lp
+            setOnClickListener { onImportAudio() }
+        }
+        addView(importBtn)
 
         // ================= BOTTOM MICROPHONE FAB =================
         recordFab = FloatingActionButton(context).apply {
@@ -281,6 +303,35 @@ class NotesTimelineView(
 
         addView(recordingOverlay, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
+        importingOverlay = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(OpenWisprUi.BACKGROUND)
+            setPadding(dp(32), dp(48), dp(32), dp(48))
+            visibility = View.GONE
+            isClickable = true
+            isFocusable = true
+
+            addView(ProgressBar(context).apply {
+                isIndeterminate = true
+            })
+            addView(TextView(context).apply {
+                text = "Preparing audio for transcription…"
+                textSize = 18f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(OpenWisprUi.TEXT)
+                gravity = Gravity.CENTER
+                setPadding(0, dp(20), 0, dp(8))
+            })
+            addView(TextView(context).apply {
+                text = "Decoding • mono mix • 16 kHz • level normalization"
+                textSize = 13f
+                setTextColor(OpenWisprUi.TEXT_SECONDARY)
+                gravity = Gravity.CENTER
+            })
+        }
+        addView(importingOverlay, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+
         // Hook up recorder ticks to restrained audio level & timer
         recorder.onTickListener = { elapsedMs, amplitude ->
             val totalSec = elapsedMs / 1000
@@ -312,6 +363,7 @@ class NotesTimelineView(
         }
         if (ok) {
             recordFab.visibility = View.GONE
+            importBtn.visibility = View.GONE
             recordingOverlay.visibility = View.VISIBLE
             recTimerText.text = "00:00"
             recLevelIndicator.progress = 0
@@ -324,6 +376,7 @@ class NotesTimelineView(
         val note = recorder.stopAndSave()
         recordingOverlay.visibility = View.GONE
         recordFab.visibility = View.VISIBLE
+        importBtn.visibility = View.VISIBLE
 
         if (note != null) {
             // Durable persistence has succeeded!
@@ -340,6 +393,62 @@ class NotesTimelineView(
         recorder.cancel()
         recordingOverlay.visibility = View.GONE
         recordFab.visibility = View.VISIBLE
+        importBtn.visibility = View.VISIBLE
+    }
+
+    fun importAudio(uri: android.net.Uri) {
+        if (recorder.isRecording || importingOverlay.visibility == View.VISIBLE) return
+
+        recordFab.visibility = View.GONE
+        importBtn.visibility = View.GONE
+        importingOverlay.visibility = View.VISIBLE
+
+        Thread({
+            var preparedFile: java.io.File? = null
+            var sourceCopy: java.io.File? = null
+            try {
+                val prepared =
+                    AudioImportProcessor.prepare(context.applicationContext, uri)
+                preparedFile = prepared.wavFile
+                sourceCopy = prepared.sourceCopy
+                val note = repo.createAndSaveNoteFromCanonicalWavFile(
+                    prepared.wavFile,
+                    prepared.durationMs
+                )
+                runCatching {
+                    repo.preserveImportedSource(note.id, prepared.sourceCopy)
+                }
+                val importSummary = prepared.summary
+                NoteTranscriber.transcribeNoteAsync(context.applicationContext, note.id)
+
+                post {
+                    importingOverlay.visibility = View.GONE
+                    recordFab.visibility = View.VISIBLE
+                    importBtn.visibility = View.VISIBLE
+                    refreshNotes()
+                    Toast.makeText(
+                        context,
+                        "Imported · $importSummary",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    NoteDetailDialog(context, note.id) { refreshNotes() }.show()
+                }
+            } catch (e: Exception) {
+                post {
+                    importingOverlay.visibility = View.GONE
+                    recordFab.visibility = View.VISIBLE
+                    importBtn.visibility = View.VISIBLE
+                    Toast.makeText(
+                        context,
+                        "Import failed: ${e.message ?: "unsupported audio"}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } finally {
+                preparedFile?.delete()
+                sourceCopy?.delete()
+            }
+        }, "voice-note-import").start()
     }
 
     fun dispose() {
@@ -374,7 +483,7 @@ class NotesTimelineView(
             if (currentSearchQuery.isNotEmpty()) {
                 emptyView.text = "No results\n\nTry another search."
             } else {
-                emptyView.text = "No voice notes yet\n\nYour voice, captured.\nTap the microphone to record your first note."
+                emptyView.text = "No voice notes yet\n\nRecord a new note or import existing audio."
             }
             return
         } else {

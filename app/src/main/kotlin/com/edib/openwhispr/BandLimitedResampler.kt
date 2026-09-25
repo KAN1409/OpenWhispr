@@ -211,5 +211,8 @@ class BandLimitedResampler(
         return x
     }
 
-    private fun lcm(a: Int, b: Int): Int = gcd(a, b) * (a / gcd(a, b))
+    private fun lcm(a: Int, b: Int): Int {
+        val divisor = gcd(a, b)
+        return (a / divisor) * b
+    }
 }

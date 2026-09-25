@@ -235,7 +235,11 @@ class LocalTranscriber private constructor(
                             task = "transcribe",
                         ),
                         tokens = tokens,
-                        numThreads = 2,
+                        // Whisper is the only multilingual family here and is
+                        // CPU-bound on Android. Four threads is a conservative
+                        // ceiling: official sherpa benchmarks show useful gains
+                        // beyond two without flooding every mobile core.
+                        numThreads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4),
                         modelType = "whisper",
                     )
                 )

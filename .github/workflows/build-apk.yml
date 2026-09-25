@@ -1,6 +1,7 @@
 name: Build APK
 
 on:
+  # Keep push builds, and allow an explicit manual build from the Actions tab.
   push:
     branches: [ main ]
   workflow_dispatch: {}
@@ -33,8 +34,19 @@ jobs:
           yes | "$SDKMANAGER" --licenses > /dev/null || true
           "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
 
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon
+
+      - name: Verify APK exists
+        run: |
+          APK="$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -type f | head -n1)"
+          test -n "$APK"
+          test -s "$APK"
+          echo "Built APK: $APK"
+          sha256sum "$APK"
 
       - name: Read app version
         id: version

@@ -1,9 +1,10 @@
 name: Benchmark APK Build
 
 on:
-  push:
+  pull_request:
     branches:
-      - feat/local-model-benchmark
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: read

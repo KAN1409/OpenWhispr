@@ -33,7 +33,6 @@ object TranscriberClient {
                     callback(Result(promptedText, null)); return@transcribeOnce
                 }
                 val chunks = splitOnSilence(wavData)
-                if (chunks.size < 2) { callback(baseline); return@transcribeOnce }
                 transcribeChunks(chunks, apiKey, 0, mutableListOf()) { parts ->
                     val combined = parts.filter(::isMeaningfulChunk).joinToString(" ").trim()
                     if (isArabicLatinMix(combined)) {

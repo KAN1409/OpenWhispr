@@ -1,573 +1,289 @@
 package com.edib.openwhispr
 
-import android.app.AlertDialog
 import android.app.Dialog
 import android.content.Context
 import android.content.res.ColorStateList
-import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
-import android.widget.*
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.SeekBar
+import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.widget.PopupMenu
 import com.google.android.material.button.MaterialButton
-import java.io.File
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
-/**
- * Note Detail screen / dialog.
- * Dark, minimal, dense, native Android, consistent with OpenWispr.
- * No gradients, no glowing AI controls.
- */
 class NoteDetailDialog(
     context: Context,
-    private val initialNoteId: String,
+    private val noteId: String,
     private val onNoteChanged: () -> Unit
 ) : Dialog(context, android.R.style.Theme_Black_NoTitleBar_Fullscreen) {
-
     private val repo = NotesRepository.getInstance(context)
     private val player = NoteAudioPlayer()
     private var currentNote: Note? = null
-
-    private lateinit var titleText: TextView
-    private lateinit var dateText: TextView
-    private lateinit var playBtn: MaterialButton
+    private lateinit var playButton: View
     private lateinit var seekBar: SeekBar
     private lateinit var elapsedText: TextView
     private lateinit var totalText: TextView
-    private lateinit var speedBtn: MaterialButton
-    private lateinit var statusBadge: TextView
-    private lateinit var retryBtn: MaterialButton
-
-    private lateinit var transcriptContainer: LinearLayout
+    private lateinit var dateText: TextView
+    private lateinit var speedButton: MaterialButton
+    private lateinit var statusText: TextView
+    private lateinit var retryButton: MaterialButton
+    private lateinit var transcriptSection: LinearLayout
     private lateinit var transcriptText: TextView
-    private lateinit var editedBadge: TextView
-    private lateinit var viewOriginalBtn: MaterialButton
-    private lateinit var editBtn: MaterialButton
-    private lateinit var shareBtn: MaterialButton
-
-    private var playbackSpeed = 1.0f
-    private var isTrackingTouch = false
-
-    private val d = context.resources.displayMetrics.density
-    private fun dp(v: Int) = (v * d).toInt()
+    private lateinit var editedLabel: TextView
+    private lateinit var originalButton: MaterialButton
+    private var speed = 1f
+    private var paused = false
+    private var tracking = false
+    private val repositoryListener: () -> Unit = { window?.decorView?.post { loadNote() } }
+    private fun dp(value: Int) = with(OpenWisprUi) { context.dp(value) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
-        window?.setBackgroundDrawable(ColorDrawable(0xFF111111.toInt()))
+        window?.setBackgroundDrawable(ColorDrawable(OpenWisprUi.BACKGROUND))
         window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
 
-        val root = LinearLayout(context).apply {
+        val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xFF111111.toInt())
-            setPadding(dp(20), dp(24), dp(20), dp(32))
+            setPadding(dp(20), dp(8), dp(20), dp(32))
         }
-
-        // ================= TOP BAR: Back | More =================
-        val topBar = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(24)
-            }
-            layoutParams = lp
-        }
-
-        val backBtn = TextView(context).apply {
-            text = "← Back"
-            textSize = 16f
-            setTextColor(0xFFE0E0E0.toInt())
-            setTypeface(typeface, Typeface.BOLD)
-            setPadding(0, dp(8), dp(16), dp(8))
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { dismiss() }
-        }
-        topBar.addView(backBtn)
-
-        val spacer = View(context).apply {
-            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-        }
-        topBar.addView(spacer)
-
-        val moreBtn = TextView(context).apply {
-            text = "More ⋮"
-            textSize = 16f
-            setTextColor(0xFFE0E0E0.toInt())
-            setTypeface(typeface, Typeface.BOLD)
-            setPadding(dp(16), dp(8), 0, dp(8))
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { v -> showMoreMenu(v) }
-        }
-        topBar.addView(moreBtn)
-        root.addView(topBar)
-
-        // ================= HEADER: Title & Date =================
-        titleText = TextView(context).apply {
-            textSize = 22f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(0xFFFFFFFF.toInt())
-        }
-        root.addView(titleText)
+        val topBar = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(56) }
+        topBar.addView(OpenWisprUi.iconButton(context, R.drawable.ic_back, "Back") { dismiss() })
+        topBar.addView(TextView(context).apply {
+            text = "Voice note"; textSize = 18f; setTypeface(typeface, Typeface.BOLD)
+            setTextColor(OpenWisprUi.ON_BACKGROUND); gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, dp(56), 1f)
+        })
+        val more = OpenWisprUi.iconButton(context, R.drawable.ic_more, "More actions") {}
+        more.setOnClickListener { showMoreMenu(more) }
+        topBar.addView(more)
+        content.addView(topBar)
 
         dateText = TextView(context).apply {
-            textSize = 14f
-            setTextColor(0xFF888888.toInt())
-            setPadding(0, dp(4), 0, dp(24))
+            tag = "date"; textSize = 14f; setTextColor(OpenWisprUi.MUTED)
+            gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(20))
         }
-        root.addView(dateText)
+        content.addView(dateText)
+        content.addView(buildPlayer())
 
-        // ================= AUDIO PLAYER CARD =================
-        // [ Play ] ━━━━━●━━━━━━━━ 2:43
-        //          00:41            1×
-        val playerCard = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            background = GradientDrawable().apply {
-                setColor(0xFF1E1E1E.toInt())
-                cornerRadius = 12 * d
-            }
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(24)
-            }
-            layoutParams = lp
+        statusText = TextView(context).apply {
+            textSize = 15f; setLineSpacing(dp(3).toFloat(), 1f); setTextColor(OpenWisprUi.MUTED)
+            gravity = Gravity.CENTER; setPadding(dp(16), dp(24), dp(16), dp(12))
         }
-
-        val controlsRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        playBtn = MaterialButton(context).apply {
-            text = "Play"
-            textSize = 14f
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xFF2A2A2A.toInt())
-            cornerRadius = dp(8)
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            minWidth = dp(70)
-            setOnClickListener { togglePlay() }
-        }
-        controlsRow.addView(playBtn)
-
-        seekBar = SeekBar(context).apply {
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(12)
-                marginEnd = dp(12)
-            }
-            progressTintList = ColorStateList.valueOf(0xFF3B82F6.toInt())
-            thumbTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                    if (fromUser) {
-                        player.seekTo(progress)
-                        elapsedText.text = Note.formatElapsed(progress.toLong())
-                    }
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) { isTrackingTouch = true }
-                override fun onStopTrackingTouch(sb: SeekBar?) { isTrackingTouch = false }
-            })
-        }
-        controlsRow.addView(seekBar)
-
-        totalText = TextView(context).apply {
-            text = "0:00"
-            textSize = 13f
-            setTextColor(0xFF9E9E9E.toInt())
-            minWidth = dp(38)
-            gravity = Gravity.END
-        }
-        controlsRow.addView(totalText)
-        playerCard.addView(controlsRow)
-
-        // Elapsed time & Speed toggle row
-        val timeRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(6)
-            }
-            layoutParams = lp
-        }
-
-        // Space aligned under play button
-        val dummySpacer = View(context).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(70), 1)
-        }
-        timeRow.addView(dummySpacer)
-
-        elapsedText = TextView(context).apply {
-            text = "00:00"
-            textSize = 12f
-            setTextColor(0xFF888888.toInt())
-            setPadding(dp(12), 0, 0, 0)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        timeRow.addView(elapsedText)
-
-        speedBtn = MaterialButton(context, null, android.R.attr.borderlessButtonStyle).apply {
-            text = "1×"
-            textSize = 13f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(0xFF9E9E9E.toInt())
-            setPadding(dp(8), 0, dp(8), 0)
-            minWidth = dp(40)
-            setOnClickListener { cycleSpeed() }
-        }
-        timeRow.addView(speedBtn)
-        playerCard.addView(timeRow)
-
-        root.addView(playerCard)
-
-        // ================= STATUS / PENDING / FAILED =================
-        statusBadge = TextView(context).apply {
-            textSize = 14f
-            visibility = View.GONE
-            setPadding(0, 0, 0, dp(12))
-        }
-        root.addView(statusBadge)
-
-        retryBtn = MaterialButton(context).apply {
-            text = "Retry transcription"
-            textSize = 14f
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xFF2A2A2A.toInt())
-            visibility = View.GONE
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(16)
-            }
-            layoutParams = lp
-            setOnClickListener {
-                currentNote?.let {
-                    NoteTranscriber.transcribeNoteAsync(context, it.id)
-                    loadNote()
-                    onNoteChanged()
-                }
+        content.addView(statusText)
+        retryButton = MaterialButton(context).apply {
+            text = "Retry transcription"; minimumHeight = dp(48); visibility = View.GONE
+            backgroundTintList = ColorStateList.valueOf(OpenWisprUi.SURFACE_HIGH)
+            setTextColor(OpenWisprUi.PRIMARY); setOnClickListener {
+                NoteTranscriber.transcribeNoteAsync(context, noteId); loadNote(); onNoteChanged()
             }
         }
-        root.addView(retryBtn)
+        content.addView(retryButton)
 
-        // ================= TRANSCRIPT SECTION =================
-        transcriptContainer = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
+        transcriptSection = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        transcriptSection.addView(OpenWisprUi.sectionLabel(context, "TRANSCRIPT").apply { setPadding(0, dp(24), 0, dp(12)) })
+        editedLabel = TextView(context).apply {
+            text = "Edited"; textSize = 12f; setTextColor(OpenWisprUi.PRIMARY); visibility = View.GONE
         }
-
-        val transcriptLabelRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(8))
-        }
-
-        val transcriptLabel = TextView(context).apply {
-            text = "TRANSCRIPT"
-            textSize = 12f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(0xFF888888.toInt())
-        }
-        transcriptLabelRow.addView(transcriptLabel)
-
-        editedBadge = TextView(context).apply {
-            text = " · Edited"
-            textSize = 12f
-            setTextColor(0xFF3B82F6.toInt())
-            visibility = View.GONE
-        }
-        transcriptLabelRow.addView(editedBadge)
-        transcriptContainer.addView(transcriptLabelRow)
-
-        // Transcript text with native Android BiDi support
+        transcriptSection.addView(editedLabel)
         transcriptText = TextView(context).apply {
-            textSize = 16f
-            setTextColor(0xFFFFFFFF.toInt())
-            setLineSpacing(dp(4).toFloat(), 1f)
-            setPadding(0, dp(4), 0, dp(16))
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-            textAlignment = View.TEXT_ALIGNMENT_VIEW_START
-            setTextIsSelectable(true)
+            textSize = 18f; setTextColor(OpenWisprUi.ON_BACKGROUND); setLineSpacing(dp(5).toFloat(), 1f)
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG; textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+            setTextIsSelectable(true); setPadding(0, dp(6), 0, dp(16))
         }
-        transcriptContainer.addView(transcriptText)
-
-        // View original button (if edited)
-        viewOriginalBtn = MaterialButton(context, null, android.R.attr.borderlessButtonStyle).apply {
-            text = "View original transcription"
-            textSize = 13f
-            setTextColor(0xFF888888.toInt())
-            visibility = View.GONE
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(8)
-            }
-            layoutParams = lp
-            setOnClickListener { showOriginalTranscriptDialog() }
+        transcriptSection.addView(transcriptText)
+        transcriptSection.addView(MaterialButton(context, null, android.R.attr.borderlessButtonStyle).apply {
+            text = "Edit transcript"; minimumHeight = dp(48); gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setTextColor(OpenWisprUi.PRIMARY); setOnClickListener { openEditor() }
+        })
+        originalButton = MaterialButton(context, null, android.R.attr.borderlessButtonStyle).apply {
+            text = "View original transcription"; minimumHeight = dp(48); gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setTextColor(OpenWisprUi.MUTED); visibility = View.GONE; setOnClickListener { showOriginal() }
         }
-        transcriptContainer.addView(viewOriginalBtn)
+        transcriptSection.addView(originalButton)
+        content.addView(transcriptSection)
 
-        // Action buttons: Edit, Share
-        val actionRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(8)
-            }
-            layoutParams = lp
-        }
-
-        editBtn = MaterialButton(context).apply {
-            text = "Edit"
-            textSize = 14f
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xFF2A2A2A.toInt())
-            cornerRadius = dp(8)
-            setOnClickListener { promptEditTranscript() }
-        }
-        actionRow.addView(editBtn)
-
-        shareBtn = MaterialButton(context).apply {
-            text = "Share"
-            textSize = 14f
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xFF2A2A2A.toInt())
-            cornerRadius = dp(8)
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                marginStart = dp(12)
-            }
-            layoutParams = lp
-            setOnClickListener { showShareOptions() }
-        }
-        actionRow.addView(shareBtn)
-
-        transcriptContainer.addView(actionRow)
-        root.addView(transcriptContainer)
-
-        val scroll = ScrollView(context).apply {
-            isFillViewport = true
-            addView(root)
-        }
+        val scroll = ScrollView(context).apply { isFillViewport = true; addView(content) }
         setContentView(scroll)
-
+        repo.addListener(repositoryListener)
         loadNote()
     }
 
-    private fun loadNote() {
-        val note = repo.getNote(initialNoteId)
-        currentNote = note
-        if (note == null) {
-            dismiss()
-            return
+    private fun buildPlayer(): View {
+        val card = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(12), dp(12), dp(8))
+            background = OpenWisprUi.rounded(OpenWisprUi.SURFACE, 14, context)
         }
+        val controls = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        playButton = OpenWisprUi.iconButton(context, R.drawable.ic_play, "Play recording") { togglePlayback() }
+        controls.addView(playButton)
+        seekBar = SeekBar(context).apply {
+            progressTintList = ColorStateList.valueOf(OpenWisprUi.PRIMARY)
+            thumbTintList = ColorStateList.valueOf(OpenWisprUi.PRIMARY)
+            layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar?, value: Int, fromUser: Boolean) {
+                    if (fromUser) { player.seekTo(value); elapsedText.text = Note.formatElapsed(value.toLong()) }
+                }
+                override fun onStartTrackingTouch(bar: SeekBar?) { tracking = true }
+                override fun onStopTrackingTouch(bar: SeekBar?) { tracking = false }
+            })
+        }
+        controls.addView(seekBar)
+        totalText = TextView(context).apply {
+            text = "0:00"; textSize = 13f; setTextColor(OpenWisprUi.ON_SURFACE); gravity = Gravity.END; minWidth = dp(44)
+        }
+        controls.addView(totalText)
+        card.addView(controls)
+        val meta = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(52), 0, 0, 0) }
+        elapsedText = TextView(context).apply {
+            text = "00:00"; textSize = 12f; setTextColor(OpenWisprUi.MUTED)
+            layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f); gravity = Gravity.CENTER_VERTICAL
+        }
+        meta.addView(elapsedText)
+        speedButton = MaterialButton(context, null, android.R.attr.borderlessButtonStyle).apply {
+            text = "1×"; contentDescription = "Playback speed, one times"; minWidth = dp(48); minimumHeight = dp(48)
+            setTextColor(OpenWisprUi.ON_SURFACE); setOnClickListener { cycleSpeed() }
+        }
+        meta.addView(speedButton); card.addView(meta)
+        return card
+    }
 
-        titleText.text = note.title
+    private fun loadNote() {
+        if (!::statusText.isInitialized) return
+        val note = repo.getNote(noteId) ?: run { dismiss(); return }
+        currentNote = note
         dateText.text = "${Note.formatDateHeader(note.createdAt)}, ${Note.formatTime(note.createdAt)}"
         totalText.text = Note.formatDuration(note.audioDurationMs)
-        seekBar.max = note.audioDurationMs.toInt()
-
+        seekBar.max = note.audioDurationMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         when (note.transcriptionState) {
             Note.State.PENDING -> {
-                statusBadge.text = "Transcribing…\nYour recording is safe."
-                statusBadge.setTextColor(0xFF9E9E9E.toInt())
-                statusBadge.visibility = View.VISIBLE
-                retryBtn.visibility = View.GONE
-                transcriptContainer.visibility = View.GONE
+                statusText.text = "Transcribing…\nYour recording is safe."
+                statusText.setTextColor(OpenWisprUi.MUTED); statusText.visibility = View.VISIBLE
+                retryButton.visibility = View.GONE; transcriptSection.visibility = View.GONE
             }
             Note.State.FAILED -> {
-                statusBadge.text = "Couldn't transcribe\nYour recording is safe."
-                statusBadge.setTextColor(0xFFEF4444.toInt())
-                statusBadge.visibility = View.VISIBLE
-                retryBtn.visibility = View.VISIBLE
-                transcriptContainer.visibility = View.GONE
+                statusText.text = "Couldn't transcribe\nYour recording is safe."
+                statusText.setTextColor(OpenWisprUi.ERROR); statusText.visibility = View.VISIBLE
+                retryButton.visibility = View.VISIBLE; transcriptSection.visibility = View.GONE
             }
             Note.State.COMPLETE -> {
-                statusBadge.visibility = View.GONE
-                retryBtn.visibility = View.GONE
-                transcriptContainer.visibility = View.VISIBLE
-                transcriptText.text = note.displayTranscript ?: ""
-                editedBadge.visibility = if (note.hasEditedTranscript) View.VISIBLE else View.GONE
-                viewOriginalBtn.visibility = if (note.hasEditedTranscript) View.VISIBLE else View.GONE
+                statusText.visibility = View.GONE; retryButton.visibility = View.GONE; transcriptSection.visibility = View.VISIBLE
+                transcriptText.text = note.displayTranscript.orEmpty()
+                editedLabel.visibility = if (note.hasEditedTranscript) View.VISIBLE else View.GONE
+                originalButton.visibility = if (note.hasEditedTranscript) View.VISIBLE else View.GONE
             }
         }
     }
 
-    private fun togglePlay() {
+    private fun togglePlayback() {
         val note = currentNote ?: return
-        if (player.isPlaying) {
-            player.pause()
-            playBtn.text = "Play"
-        } else {
-            playBtn.text = "Pause"
-            player.play(
-                audioPath = note.audioPath,
-                speed = playbackSpeed,
-                onProgress = { current, total ->
-                    if (!isTrackingTouch) {
-                        seekBar.max = total
-                        seekBar.progress = current
-                        elapsedText.text = Note.formatElapsed(current.toLong())
-                    }
-                },
-                onCompletion = {
-                    playBtn.text = "Play"
-                    seekBar.progress = 0
-                    elapsedText.text = "00:00"
-                },
-                onError = { err ->
-                    playBtn.text = "Play"
-                    Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
-                }
-            )
+        when {
+            player.isPlaying -> {
+                player.pause(); paused = true; setPlayIcon(false)
+            }
+            paused -> {
+                player.resume(); paused = false; setPlayIcon(true)
+            }
+            else -> {
+                paused = false; setPlayIcon(true)
+                player.play(note.audioPath, speed, { current, total ->
+                    if (!tracking) { seekBar.max = total; seekBar.progress = current; elapsedText.text = Note.formatElapsed(current.toLong()) }
+                }, {
+                    paused = false; setPlayIcon(false); seekBar.progress = 0; elapsedText.text = "00:00"
+                }, {
+                    paused = false; setPlayIcon(false); Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+                })
+            }
+        }
+    }
+
+    private fun setPlayIcon(playing: Boolean) {
+        (playButton as? android.widget.ImageButton)?.apply {
+            setImageResource(if (playing) R.drawable.ic_pause else R.drawable.ic_play)
+            contentDescription = if (playing) "Pause recording" else "Play recording"
         }
     }
 
     private fun cycleSpeed() {
-        playbackSpeed = when (playbackSpeed) {
-            1.0f -> 1.5f
-            1.5f -> 2.0f
-            else -> 1.0f
-        }
-        speedBtn.text = "${playbackSpeed}×"
-        player.setSpeed(playbackSpeed)
+        speed = when (speed) { 1f -> 1.5f; 1.5f -> 2f; else -> 1f }
+        speedButton.text = "${speed.toString().removeSuffix(".0")}×"
+        speedButton.contentDescription = "Playback speed, ${speed.toString().removeSuffix(".0")} times"
+        player.setSpeed(speed)
     }
 
-    /**
-     * MORE MENU: ONLY:
-     * - Pin / Unpin
-     * - Share
-     * - Retranscribe
-     * - Delete
-     */
     private fun showMoreMenu(anchor: View) {
         val note = currentNote ?: return
-        val popup = PopupMenu(context, anchor)
-        popup.menu.add(if (note.isPinned) "Unpin" else "Pin")
-        popup.menu.add("Share")
-        popup.menu.add("Retranscribe")
-        popup.menu.add("Delete")
-
-        popup.setOnMenuItemClickListener { item ->
-            when (item.title) {
-                "Pin", "Unpin" -> {
-                    repo.togglePinned(note.id)
-                    loadNote()
-                    onNoteChanged()
-                    true
+        PopupMenu(context, anchor).apply {
+            menu.add(if (note.isPinned) "Unpin" else "Pin")
+            menu.add("Share")
+            menu.add("Retranscribe")
+            menu.add("Delete")
+            setOnMenuItemClickListener { item ->
+                when (item.title.toString()) {
+                    "Pin", "Unpin" -> { repo.togglePinned(note.id); onNoteChanged(); true }
+                    "Share" -> { showShareOptions(); true }
+                    "Retranscribe" -> { NoteTranscriber.transcribeNoteAsync(context, note.id); loadNote(); true }
+                    "Delete" -> { confirmDelete(note); true }
+                    else -> false
                 }
-                "Share" -> {
-                    showShareOptions()
-                    true
-                }
-                "Retranscribe" -> {
-                    NoteTranscriber.transcribeNoteAsync(context, note.id)
-                    loadNote()
-                    onNoteChanged()
-                    true
-                }
-                "Delete" -> {
-                    confirmDelete(note)
-                    true
-                }
-                else -> false
             }
+            show()
         }
-        popup.show()
     }
 
     private fun showShareOptions() {
         val note = currentNote ?: return
-        val options = arrayOf("Share transcript", "Share audio", "Share audio & transcript")
-        AlertDialog.Builder(context)
-            .setTitle("Share")
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> NoteShareHelper.shareTranscript(context, note)
-                    1 -> NoteShareHelper.shareAudio(context, note)
-                    2 -> NoteShareHelper.shareAudioAndTranscript(context, note)
-                }
-            }
-            .show()
-    }
-
-    private fun promptEditTranscript() {
-        val note = currentNote ?: return
-        val currentText = note.displayTranscript ?: ""
-
-        val input = EditText(context).apply {
-            setText(currentText)
-            textSize = 16f
-            setTextColor(0xFFFFFFFF.toInt())
-            setHintTextColor(0xFF666666.toInt())
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-            textAlignment = View.TEXT_ALIGNMENT_VIEW_START
-            setPadding(dp(16), dp(12), dp(16), dp(12))
-            setBackgroundColor(0xFF222222.toInt())
-        }
-
-        AlertDialog.Builder(context)
-            .setTitle("Edit transcript")
-            .setMessage("Original audio and original ASR transcript remain preserved.")
-            .setView(input)
-            .setPositiveButton("Save") { _, _ ->
-                val newText = input.text.toString().trim()
-                if (newText.isNotBlank()) {
-                    repo.updateEditedTranscript(note.id, newText)
-                    loadNote()
-                    onNoteChanged()
-                }
+        MaterialAlertDialogBuilder(context)
+            .setTitle("Share note")
+            .setItems(arrayOf("Transcript", "Audio", "Audio + transcript")) { _, which ->
+                when (which) { 0 -> NoteShareHelper.shareTranscript(context, note); 1 -> NoteShareHelper.shareAudio(context, note); else -> NoteShareHelper.shareAudioAndTranscript(context, note) }
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    private fun showOriginalTranscriptDialog() {
+    private fun openEditor() {
         val note = currentNote ?: return
-        val original = note.originalTranscript ?: "No original transcript available"
+        TranscriptEditorDialog(context, note.id) { loadNote(); onNoteChanged() }.show()
+    }
 
-        val tv = TextView(context).apply {
-            text = original
-            textSize = 15f
-            setTextColor(0xFFFFFFFF.toInt())
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-            textAlignment = View.TEXT_ALIGNMENT_VIEW_START
-            setPadding(dp(20), dp(12), dp(20), dp(12))
-            setTextIsSelectable(true)
+    private fun showOriginal() {
+        val note = currentNote ?: return
+        val value = note.originalTranscript ?: "No original transcription available"
+        val text = TextView(context).apply {
+            this.text = value; textSize = 17f; setTextColor(OpenWisprUi.ON_BACKGROUND)
+            setLineSpacing(dp(4).toFloat(), 1f); textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            textAlignment = View.TEXT_ALIGNMENT_VIEW_START; setTextIsSelectable(true); setPadding(dp(8), dp(8), dp(8), dp(8))
         }
-
-        AlertDialog.Builder(context)
-            .setTitle("Original transcription")
-            .setView(tv)
-            .setPositiveButton("Revert to this") { _, _ ->
-                repo.revertToOriginalTranscript(note.id)
-                loadNote()
-                onNoteChanged()
-            }
-            .setNegativeButton("Close", null)
-            .show()
+        MaterialAlertDialogBuilder(context).setTitle("Original transcription").setView(text)
+            .setPositiveButton("Revert to original") { _, _ -> repo.revertToOriginalTranscript(note.id) }
+            .setNegativeButton("Close", null).show()
     }
 
     private fun confirmDelete(note: Note) {
-        AlertDialog.Builder(context)
-            .setTitle("Delete note?")
-            .setMessage("This will delete the note and its audio recording permanently.")
-            .setPositiveButton("Delete") { _, _ ->
-                player.stop()
-                repo.deleteNote(note.id)
-                onNoteChanged()
-                dismiss()
-            }
+        MaterialAlertDialogBuilder(context).setTitle("Delete voice note?")
+            .setMessage("This permanently deletes the recording and transcript.")
             .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ -> player.stop(); repo.deleteNote(note.id); onNoteChanged(); dismiss() }
             .show()
     }
 
-    override fun onStop() {
-        player.release()
-        super.onStop()
+    override fun onDetachedFromWindow() {
+        repo.removeListener(repositoryListener); player.release(); super.onDetachedFromWindow()
     }
 
-    override fun onDetachedFromWindow() {
-        player.release()
-        super.onDetachedFromWindow()
+    override fun onStart() {
+        super.onStart()
+        window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
     }
 }

@@ -13,8 +13,10 @@
         <item name="colorOnTertiaryContainer">@color/on_tertiary_container</item>
 
         <!-- Status / Navigation Bars -->
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:statusBarColor">?android:attr/colorBackground</item>
-        <item name="android:navigationBarColor">?android:attr/colorBackground</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorBackground">#101114</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
 </resources>

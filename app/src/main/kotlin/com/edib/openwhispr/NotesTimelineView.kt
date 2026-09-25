@@ -405,10 +405,12 @@ class NotesTimelineView(
 
         Thread({
             var preparedFile: java.io.File? = null
+            var sourceCopy: java.io.File? = null
             try {
                 val prepared =
                     AudioImportProcessor.prepare(context.applicationContext, uri)
                 preparedFile = prepared.wavFile
+                sourceCopy = prepared.sourceCopy
                 val note = repo.createAndSaveNoteFromCanonicalWavFile(
                     prepared.wavFile,
                     prepared.durationMs
@@ -442,14 +444,7 @@ class NotesTimelineView(
                 }
             } finally {
                 preparedFile?.delete()
-                // prepare() returns an exact source copy for durable preservation;
-                // remove only the cache copy after the repository has committed it.
-                runCatching {
-                    context.cacheDir.listFiles()
-                        ?.filter { it.name.startsWith("import-") && it.name.endsWith(".source") }
-                        ?.filter { System.currentTimeMillis() - it.lastModified() > 5 * 60_000L }
-                        ?.forEach { it.delete() }
-                }
+                sourceCopy?.delete()
             }
         }, "voice-note-import").start()
     }

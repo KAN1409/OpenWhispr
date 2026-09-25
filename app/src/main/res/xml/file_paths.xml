@@ -2,4 +2,6 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Matches UpdateChecker.downloadApk's File(context.cacheDir, "updates") -->
     <cache-path name="updates" path="updates/" />
+    <!-- Matches NotesRepository File(context.filesDir, "notes") -->
+    <files-path name="notes" path="notes/" />
 </paths>

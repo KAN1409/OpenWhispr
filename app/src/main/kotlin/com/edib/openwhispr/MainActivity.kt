@@ -52,6 +52,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusContainer: LinearLayout
     private lateinit var dictationContainer: LinearLayout
     private lateinit var settingsContainer: LinearLayout
+    private lateinit var rootContainer: FrameLayout
+    private lateinit var notesView: NotesTimelineView
+    private lateinit var settingsScrollView: ScrollView
 
     private val modelRows = mutableMapOf<String, ModelRowViews>()
     private var batteryWarningShown = false
@@ -81,6 +84,24 @@ class MainActivity : AppCompatActivity() {
         checkForUpdate()
 
         val outer = vertical(0, 0)
+
+        val backToNotesBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(20), dp(20), dp(20), 0)
+            val backText = TextView(this@MainActivity).apply {
+                text = "← Back to Notes"
+                textSize = 15f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(0xFF3B82F6.toInt())
+                setPadding(0, dp(8), dp(16), dp(8))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { showNotesScreen() }
+            }
+            addView(backText)
+        }
+        outer.addView(backToNotesBar)
 
         // Top large header (like "Connected devices"), with the app icon
         // alongside the name.
@@ -300,10 +321,22 @@ class MainActivity : AppCompatActivity() {
         outer.addView(settingsContainer)
         showTab(0)
 
-        setContentView(ScrollView(this).apply {
+        settingsScrollView = ScrollView(this).apply {
             setBackgroundColor(attrColor(android.R.attr.colorBackground))
             addView(outer)
-        })
+            visibility = View.GONE
+        }
+
+        notesView = NotesTimelineView(this) {
+            showSettingsScreen()
+        }
+
+        rootContainer = FrameLayout(this).apply {
+            addView(notesView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(settingsScrollView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }
+
+        setContentView(rootContainer)
 
         if (!hasPerm(Manifest.permission.RECORD_AUDIO)) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 1)
@@ -312,7 +345,39 @@ class MainActivity : AppCompatActivity() {
         refresh()
     }
 
-    override fun onResume() { super.onResume(); refresh() }
+    override fun onResume() {
+        super.onResume()
+        refresh()
+        if (::notesView.isInitialized) {
+            notesView.refreshNotes()
+        }
+    }
+
+    private fun showNotesScreen() {
+        settingsScrollView.visibility = View.GONE
+        notesView.visibility = View.VISIBLE
+        notesView.refreshNotes()
+    }
+
+    private fun showSettingsScreen() {
+        notesView.visibility = View.GONE
+        settingsScrollView.visibility = View.VISIBLE
+        refresh()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (::notesView.isInitialized && notesView.isRecording()) {
+            notesView.cancelRecording()
+            return
+        }
+        if (::settingsScrollView.isInitialized && settingsScrollView.visibility == View.VISIBLE) {
+            showNotesScreen()
+            return
+        }
+        @Suppress("DEPRECATION")
+        super.onBackPressed()
+    }
     override fun onRequestPermissionsResult(c: Int, p: Array<String>, r: IntArray) {
         super.onRequestPermissionsResult(c, p, r); refresh()
     }

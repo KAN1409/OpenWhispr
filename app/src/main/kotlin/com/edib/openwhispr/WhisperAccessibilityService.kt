@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -20,8 +21,10 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -30,11 +33,13 @@ import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import java.io.ByteArrayOutputStream
+import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.abs
 
@@ -72,8 +77,10 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private enum class State { IDLE, RECORDING, TRANSCRIBING }
+    private enum class SessionType { DICTATION, NOTE }
 
     private var state = State.IDLE
+    private var currentSessionType = SessionType.DICTATION
     private var overlayView: FrameLayout? = null
     private var overlayShown = false
 
@@ -87,12 +94,36 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var imeVisibleSignal = false
     private var button: ImageView? = null
     private var spinner: ProgressBar? = null
+    private var noteBarView: LinearLayout? = null
+    private var noteTimerText: TextView? = null
+    private var noteRecordingStartTime = 0L
     private var feedbackView: TextView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var feedbackLayoutParams: WindowManager.LayoutParams? = null
     private var audioRecord: AudioRecord? = null
     private var pcmStream: ByteArrayOutputStream? = null
     private val handler = Handler(Looper.getMainLooper())
+
+    private val noteTimerRunnable = object : Runnable {
+        override fun run() {
+            if (state == State.RECORDING && currentSessionType == SessionType.NOTE) {
+                val elapsedSec = ((System.currentTimeMillis() - noteRecordingStartTime) / 1000).coerceAtLeast(0)
+                val mins = elapsedSec / 60
+                val secs = elapsedSec % 60
+                noteTimerText?.text = String.format(Locale.US, "%02d:%02d", mins, secs)
+                handler.postDelayed(this, 500)
+            }
+        }
+    }
+
+    private fun startNoteTimer() {
+        handler.removeCallbacks(noteTimerRunnable)
+        handler.post(noteTimerRunnable)
+    }
+
+    private fun stopNoteTimer() {
+        handler.removeCallbacks(noteTimerRunnable)
+    }
     private val hideFeedback = Runnable {
         feedbackView?.animate()?.alpha(0f)?.setDuration(180)?.withEndAction {
             feedbackView?.visibility = View.GONE
@@ -340,9 +371,44 @@ class WhisperAccessibilityService : AccessibilityService() {
             background = circle(COLOR_IDLE)
         }
 
+        val noteBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((12 * dp).toInt(), (6 * dp).toInt(), (12 * dp).toInt(), (6 * dp).toInt())
+            background = pill(COLOR_FEEDBACK_BG)
+            visibility = View.GONE
+        }
+
+        val noteDot = View(this).apply {
+            background = circle(COLOR_RECORDING)
+            val dotSize = (10 * dp).toInt()
+            layoutParams = LinearLayout.LayoutParams(dotSize, dotSize).apply {
+                marginEnd = (8 * dp).toInt()
+            }
+        }
+        noteBar.addView(noteDot)
+
+        val noteTimer = TextView(this).apply {
+            text = "00:00"
+            textSize = 14f
+            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        noteBar.addView(noteTimer)
+
+        val noteStopBtn = TextView(this).apply {
+            text = "■"
+            textSize = 18f
+            setTextColor(0xFFEF4444.toInt())
+            setPadding((8 * dp).toInt(), 0, (4 * dp).toInt(), 0)
+        }
+        noteBar.addView(noteStopBtn)
+
         val overlay = FrameLayout(this).apply {
             addView(ring, FrameLayout.LayoutParams(ringSize, ringSize, Gravity.CENTER))
             addView(img, FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.CENTER))
+            addView(noteBar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER))
             alpha = 0f
             visibility = View.INVISIBLE
             setOnApplyWindowInsetsListener { _, insets ->
@@ -368,37 +434,84 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         var startX = 0; var startY = 0
         var touchX = 0f; var touchY = 0f
+        var isLongPressTriggered = false
+        var isDragging = false
+        val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
+
+        val longPressRunnable = Runnable {
+            if (state == State.IDLE && !isDragging) {
+                isLongPressTriggered = true
+                try {
+                    overlay.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                } catch (_: Exception) {}
+                startNoteRecording()
+            }
+        }
 
         overlay.setOnTouchListener { v, ev ->
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
                     startX = params.x; startY = params.y
                     touchX = ev.rawX; touchY = ev.rawY
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    params.x = startX + (ev.rawX - touchX).toInt()
-                    params.y = startY + (ev.rawY - touchY).toInt()
-                    wm.updateViewLayout(v, params)
-                    feedbackLayoutParams?.let {
-                        positionFeedback(it, params)
-                        wm.updateViewLayout(feedbackView, it)
+                    isLongPressTriggered = false
+                    isDragging = false
+                    if (state == State.IDLE) {
+                        handler.postDelayed(longPressRunnable, longPressTimeout)
                     }
                     true
                 }
-                MotionEvent.ACTION_UP -> {
-                    val moved = abs(ev.rawX - touchX) + abs(ev.rawY - touchY)
-                    if (moved < TAP_THRESHOLD_DP * dp) {
-                        onTap()
-                    } else {
-                        params.x = if (params.x + ringSize / 2 > screenW / 2)
-                            screenW - ringSize - margin else margin
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = abs(ev.rawX - touchX)
+                    val dy = abs(ev.rawY - touchY)
+                    if (dx + dy > TAP_THRESHOLD_DP * dp) {
+                        isDragging = true
+                        handler.removeCallbacks(longPressRunnable)
+                    }
+                    if (isDragging) {
+                        params.x = startX + (ev.rawX - touchX).toInt()
+                        params.y = startY + (ev.rawY - touchY).toInt()
                         wm.updateViewLayout(v, params)
                         feedbackLayoutParams?.let {
                             positionFeedback(it, params)
                             wm.updateViewLayout(feedbackView, it)
                         }
                     }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    handler.removeCallbacks(longPressRunnable)
+                    if (isLongPressTriggered) {
+                        // User initiated long press to start note recording and released finger.
+                        // Recording continues in hands-free mode without requiring hold.
+                        isLongPressTriggered = false
+                        true
+                    } else if (isDragging) {
+                        val currentW = params.width
+                        params.x = if (params.x + currentW / 2 > screenW / 2)
+                            screenW - currentW - margin else margin
+                        wm.updateViewLayout(v, params)
+                        feedbackLayoutParams?.let {
+                            positionFeedback(it, params)
+                            wm.updateViewLayout(feedbackView, it)
+                        }
+                        isDragging = false
+                        true
+                    } else {
+                        val moved = abs(ev.rawX - touchX) + abs(ev.rawY - touchY)
+                        if (moved < TAP_THRESHOLD_DP * dp) {
+                            if (state == State.RECORDING && currentSessionType == SessionType.NOTE) {
+                                stopNoteRecording()
+                            } else {
+                                onTap()
+                            }
+                        }
+                        true
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    handler.removeCallbacks(longPressRunnable)
+                    isLongPressTriggered = false
+                    isDragging = false
                     true
                 }
                 else -> false
@@ -430,12 +543,15 @@ class WhisperAccessibilityService : AccessibilityService() {
         overlayView = overlay
         button = img
         spinner = ring
+        noteBarView = noteBar
+        noteTimerText = noteTimer
         feedbackView = feedback
         layoutParams = params
         feedbackLayoutParams = feedbackParams
     }
 
     private fun removeOverlay() {
+        stopNoteTimer()
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         overlayView?.let {
             wm.removeView(it)
@@ -447,6 +563,8 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         button = null
         spinner = null
+        noteBarView = null
+        noteTimerText = null
         layoutParams = null
         feedbackLayoutParams = null
     }
@@ -541,7 +659,13 @@ class WhisperAccessibilityService : AccessibilityService() {
     private fun onTap() {
         when (state) {
             State.IDLE -> startRecording()
-            State.RECORDING -> stopAndTranscribe()
+            State.RECORDING -> {
+                if (currentSessionType == SessionType.NOTE) {
+                    stopNoteRecording()
+                } else {
+                    stopAndTranscribe()
+                }
+            }
             State.TRANSCRIBING -> {}
         }
     }
@@ -565,6 +689,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         pcmStream = ByteArrayOutputStream()
         audioRecord!!.startRecording()
         state = State.RECORDING
+        currentSessionType = SessionType.DICTATION
         setBusy(false)
         setAppearance(COLOR_RECORDING)
         setIcon(R.drawable.ic_mic)
@@ -574,9 +699,122 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         thread {
             val buf = ByteArray(bufSize)
-            while (state == State.RECORDING) {
+            while (state == State.RECORDING && currentSessionType == SessionType.DICTATION) {
                 val n = audioRecord?.read(buf, 0, buf.size) ?: break
                 if (n > 0) pcmStream?.write(buf, 0, n)
+            }
+        }
+    }
+
+    private fun startNoteRecording() {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            toast("Grant audio permission in OpenWispr app"); return
+        }
+
+        val bufSize = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+        )
+        audioRecord = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.MIC, SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize
+            )
+        } catch (_: SecurityException) { toast("Audio permission denied"); return }
+
+        pcmStream = ByteArrayOutputStream()
+        audioRecord!!.startRecording()
+        state = State.RECORDING
+        currentSessionType = SessionType.NOTE
+        noteRecordingStartTime = System.currentTimeMillis()
+
+        handler.post {
+            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            val lp = layoutParams ?: return@post
+            val ov = overlayView ?: return@post
+
+            val noteBarW = (130 * dp).toInt()
+            val noteBarH = (48 * dp).toInt()
+            lp.width = noteBarW
+            lp.height = noteBarH
+            if (lp.x + noteBarW > screenW - (MARGIN_DP * dp).toInt()) {
+                lp.x = screenW - noteBarW - (MARGIN_DP * dp).toInt()
+            }
+            wm.updateViewLayout(ov, lp)
+
+            button?.visibility = View.GONE
+            spinner?.visibility = View.GONE
+            noteBarView?.visibility = View.VISIBLE
+            noteTimerText?.text = "00:00"
+
+            setOpacity(active = true)
+            updateOverlayVisibility()
+            startNoteTimer()
+        }
+
+        thread {
+            val buf = ByteArray(bufSize)
+            while (state == State.RECORDING && currentSessionType == SessionType.NOTE) {
+                val n = audioRecord?.read(buf, 0, buf.size) ?: break
+                if (n > 0) pcmStream?.write(buf, 0, n)
+            }
+        }
+    }
+
+    private fun stopNoteRecording() {
+        if (state != State.RECORDING || currentSessionType != SessionType.NOTE) return
+
+        stopNoteTimer()
+
+        audioRecord?.stop()
+        audioRecord?.release()
+        audioRecord = null
+
+        val pcm = pcmStream?.toByteArray() ?: ByteArray(0)
+        pcmStream = null
+
+        handler.post {
+            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            val lp = layoutParams ?: return@post
+            val ov = overlayView ?: return@post
+            val ringSize = (RING_DP * dp).toInt()
+            val margin = (MARGIN_DP * dp).toInt()
+
+            lp.width = ringSize
+            lp.height = ringSize
+            if (lp.x + ringSize > screenW - margin) {
+                lp.x = screenW - ringSize - margin
+            }
+            wm.updateViewLayout(ov, lp)
+
+            noteBarView?.visibility = View.GONE
+            button?.visibility = View.VISIBLE
+            spinner?.visibility = View.GONE
+            setAppearance(COLOR_IDLE)
+            setIcon(R.drawable.ic_app_logo)
+            setOpacity(active = false)
+            state = State.IDLE
+            currentSessionType = SessionType.DICTATION
+            updateOverlayVisibility()
+
+            if (pcm.isNotEmpty()) {
+                thread {
+                    try {
+                        val repo = NotesRepository.getInstance(this@WhisperAccessibilityService)
+                        val note = repo.createAndSaveNoteFromPcm(pcm, SAMPLE_RATE)
+                        NoteTranscriber.transcribeNoteAsync(this@WhisperAccessibilityService, note.id)
+                        handler.post {
+                            showFeedback("✓ Note saved")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to persist voice note", e)
+                        handler.post {
+                            showFeedback("Note save failed")
+                        }
+                    }
+                }
+            } else {
+                showFeedback("No audio captured")
             }
         }
     }
@@ -809,7 +1047,11 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun goIdle() {
+        stopNoteTimer()
         state = State.IDLE
+        currentSessionType = SessionType.DICTATION
+        noteBarView?.visibility = View.GONE
+        button?.visibility = View.VISIBLE
         setBusy(false)
         setAppearance(COLOR_IDLE)
         setIcon(R.drawable.ic_app_logo)

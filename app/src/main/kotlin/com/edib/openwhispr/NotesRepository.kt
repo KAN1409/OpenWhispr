@@ -519,6 +519,10 @@ class NotesRepository(
         val ok = storage.delete(id)
         if (ok) {
             tombstone.delete()
+            context?.let { appContext ->
+                runCatching { LocalModelBenchmark.deleteResults(appContext, id) }
+                    .onFailure { Log.w("NotesRepository", "Unable to delete benchmark sidecar for $id", it) }
+            }
             notifyListeners()
         } else if (tombstone.exists()) {
             tombstone.renameTo(audio)

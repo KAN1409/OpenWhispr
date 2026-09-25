@@ -4,25 +4,48 @@ import android.content.Context
 import android.util.Log
 import com.k2fsa.sherpa.onnx.*
 import java.io.File
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * Local on-device transcription via sherpa-onnx.
  * Models are loaded from the app's external files dir.
  */
-class LocalTranscriber private constructor(private val recognizer: OfflineRecognizer) {
+class LocalTranscriber private constructor(
+    private val recognizer: OfflineRecognizer
+) : AutoCloseable {
 
     /** Transcribe raw PCM float samples. Blocking — call from background thread. */
     fun transcribe(samples: FloatArray, sampleRate: Int = 16000): String {
         val stream = recognizer.createStream()
-        stream.acceptWaveform(samples, sampleRate)
-        recognizer.decode(stream)
-        val result = recognizer.getResult(stream)
-        stream.release()
-        return result.text.trim()
+        return try {
+            stream.acceptWaveform(samples, sampleRate)
+            recognizer.decode(stream)
+            recognizer.getResult(stream).text.trim()
+        } finally {
+            stream.release()
+        }
+    }
+
+    /** Explicitly releases native sherpa-onnx model memory. */
+    override fun close() {
+        try {
+            recognizer.release()
+        } catch (e: LinkageError) {
+            Log.w(TAG, "Recognizer release linkage error", e)
+        } catch (e: Exception) {
+            Log.w(TAG, "Recognizer release failed", e)
+        }
     }
 
     companion object {
         private const val TAG = "LocalTranscriber"
+
+        // Prevent the Voice Note pipeline and benchmark from loading/inferencing
+        // different sherpa recognizers concurrently in the same process.
+        private val executionLock = ReentrantLock(true)
+
+        fun <T> exclusive(block: () -> T): T = executionLock.withLock(block)
 
         /** Find available model dirs under the app's files/models/ dir */
         fun availableModels(ctx: Context): List<String> {

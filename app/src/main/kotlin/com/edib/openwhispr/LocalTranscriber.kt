@@ -48,6 +48,12 @@ class LocalTranscriber private constructor(private val recognizer: OfflineRecogn
                 val recognizer = OfflineRecognizer(assetManager = null, config = config)
                 Log.i(TAG, "Loaded model: $modelName")
                 LocalTranscriber(recognizer)
+            } catch (e: LinkageError) {
+                // Missing/incompatible sherpa native libraries surface as an
+                // Error rather than an Exception. Never let that terminate the
+                // app; callers can safely fall back to cloud transcription.
+                Log.e(TAG, "Native model runtime unavailable: ${e.message}", e)
+                null
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load model: ${e.message}")
                 null

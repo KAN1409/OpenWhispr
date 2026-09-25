@@ -413,6 +413,7 @@ class NotesTimelineView(
                     prepared.wavFile,
                     prepared.durationMs
                 )
+                repo.preserveImportedSource(note.id, prepared.sourceCopy)
                 val importSummary = prepared.summary
                 NoteTranscriber.transcribeNoteAsync(context.applicationContext, note.id)
 
@@ -441,6 +442,14 @@ class NotesTimelineView(
                 }
             } finally {
                 preparedFile?.delete()
+                // prepare() returns an exact source copy for durable preservation;
+                // remove only the cache copy after the repository has committed it.
+                runCatching {
+                    context.cacheDir.listFiles()
+                        ?.filter { it.name.startsWith("import-") && it.name.endsWith(".source") }
+                        ?.filter { System.currentTimeMillis() - it.lastModified() > 5 * 60_000L }
+                        ?.forEach { it.delete() }
+                }
             }
         }, "voice-note-import").start()
     }

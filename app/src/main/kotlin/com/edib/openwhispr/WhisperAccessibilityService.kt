@@ -170,6 +170,9 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        runCatching { localTranscriber?.close() }
+            .onFailure { Log.w(TAG, "Failed to release local model on destroy", it) }
+        localTranscriber = null
         if (state == State.RECORDING && currentSessionType == SessionType.NOTE) {
             stopNoteRecording()
         } else {
@@ -233,14 +236,18 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     private fun initLocalModel() {
         // A corrupted/incompatible model file or a native (sherpa-onnx)
-        // load failure here must not be allowed to crash the process --
-        // that takes the whole accessibility service down with it.
+        // load failure here must not be allowed to crash the process.
+        val previous = localTranscriber
+        localTranscriber = null
+        runCatching { previous?.close() }
+            .onFailure { Log.w(TAG, "Failed to release previous local model", it) }
+
         try {
             val modelName = prefs().getString("model_name", "") ?: ""
-            if (modelName.isBlank()) {
-                localTranscriber = null
+            localTranscriber = if (modelName.isBlank()) {
+                null
             } else {
-                localTranscriber = LocalTranscriber.create(this, modelName)
+                LocalTranscriber.create(this, modelName)
             }
             if (localTranscriber != null) {
                 Log.i(TAG, "Local transcription ready")

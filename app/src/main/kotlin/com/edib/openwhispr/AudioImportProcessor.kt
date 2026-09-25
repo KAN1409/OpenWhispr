@@ -75,9 +75,10 @@ object AudioImportProcessor {
             val declaredRate = sourceFormat.getIntegerOrNull(MediaFormat.KEY_SAMPLE_RATE) ?: TARGET_RATE
             val declaredChannels = sourceFormat.getIntegerOrNull(MediaFormat.KEY_CHANNEL_COUNT) ?: 1
 
-            codec = MediaCodec.createDecoderByType(mime)
-            codec.configure(sourceFormat, null, null, 0)
-            codec.start()
+            val decoder = MediaCodec.createDecoderByType(mime)
+            codec = decoder
+            decoder.configure(sourceFormat, null, null, 0)
+            decoder.start()
 
             var currentRate = declaredRate
             var currentChannels = declaredChannels
@@ -133,20 +134,20 @@ object AudioImportProcessor {
 
                 while (!outputDone) {
                     if (!inputDone) {
-                        val inputIndex = codec.dequeueInputBuffer(10_000)
+                        val inputIndex = decoder.dequeueInputBuffer(10_000)
                         if (inputIndex >= 0) {
-                            val input = codec.getInputBuffer(inputIndex)
+                            val input = decoder.getInputBuffer(inputIndex)
                                 ?: throw IllegalStateException("Decoder input buffer unavailable")
                             input.clear()
                             val size = extractor.readSampleData(input, 0)
                             if (size < 0) {
-                                codec.queueInputBuffer(
+                                decoder.queueInputBuffer(
                                     inputIndex, 0, 0, 0,
                                     MediaCodec.BUFFER_FLAG_END_OF_STREAM
                                 )
                                 inputDone = true
                             } else {
-                                codec.queueInputBuffer(
+                                decoder.queueInputBuffer(
                                     inputIndex, 0, size, extractor.sampleTime, 0
                                 )
                                 extractor.advance()
@@ -154,9 +155,9 @@ object AudioImportProcessor {
                         }
                     }
 
-                    when (val outputIndex = codec.dequeueOutputBuffer(info, 10_000)) {
+                    when (val outputIndex = decoder.dequeueOutputBuffer(info, 10_000)) {
                         MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            val outputFormat = codec.outputFormat
+                            val outputFormat = decoder.outputFormat
                             currentRate = outputFormat.getIntegerOrNull(MediaFormat.KEY_SAMPLE_RATE)
                                 ?: currentRate
                             currentChannels = outputFormat.getIntegerOrNull(MediaFormat.KEY_CHANNEL_COUNT)
@@ -169,7 +170,7 @@ object AudioImportProcessor {
 
                         else -> if (outputIndex >= 0) {
                             if (info.size > 0) {
-                                val output = codec.getOutputBuffer(outputIndex)
+                                val output = decoder.getOutputBuffer(outputIndex)
                                     ?: throw IllegalStateException("Decoder output buffer unavailable")
                                 val duplicate = output.duplicate().order(ByteOrder.LITTLE_ENDIAN)
                                 duplicate.position(info.offset)
@@ -188,7 +189,7 @@ object AudioImportProcessor {
 
                             outputDone =
                                 (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                            codec.releaseOutputBuffer(outputIndex, false)
+                            decoder.releaseOutputBuffer(outputIndex, false)
                         }
                     }
                 }

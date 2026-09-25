@@ -444,7 +444,7 @@ class NotesRepository(
         val note = storage.get(id) ?: return false
         val updated = note.copy(
             // The first ASR result is evidence. Retries must never rewrite it.
-            originalTranscript = note.originalTranscript ?: rawTranscript.trim(),
+            originalTranscript = note.originalTranscript ?: rawTranscript,
             transcriptionState = Note.State.COMPLETE,
             modifiedAt = System.currentTimeMillis(),
             errorMessage = null

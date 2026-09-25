@@ -342,6 +342,18 @@ class NotesRepository(
     }
 
     /**
+     * Keeps the exact imported source beside the canonical ASR WAV. It is not
+     * decoded or rewritten and is intentionally outside the playable .wav
+     * reconciliation path.
+     */
+    fun preserveImportedSource(noteId: String, source: File): File {
+        require(source.isFile && source.length() > 0L) { "Imported source is empty" }
+        val destination = File(notesDir, "$noteId.source")
+        writeDurably(destination, source)
+        return destination
+    }
+
+    /**
      * Durably stores complete WAV bytes directly.
      */
     fun createAndSaveNoteFromWav(wavBytes: ByteArray, durationMs: Long): Note {
@@ -581,6 +593,7 @@ class NotesRepository(
         val ok = storage.delete(id)
         if (ok) {
             tombstone.delete()
+            File(notesDir, "$id.source").delete()
             context?.let { appContext ->
                 runCatching { LocalModelBenchmark.deleteResults(appContext, id) }
                     .onFailure { Log.w("NotesRepository", "Unable to delete benchmark sidecar for $id", it) }

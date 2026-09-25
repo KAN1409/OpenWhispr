@@ -19,11 +19,12 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.radiobutton.MaterialRadioButton
-import com.google.android.material.tabs.TabLayout
 import java.io.File
 
 class MainActivity : AppCompatActivity() {
@@ -48,7 +49,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var modelContainer: LinearLayout
     private lateinit var voiceCommandsDetailContainer: LinearLayout
     private lateinit var triggerPhraseRowSub: TextView
-    private lateinit var tabLayout: TabLayout
     private lateinit var statusContainer: LinearLayout
     private lateinit var dictationContainer: LinearLayout
     private lateinit var settingsContainer: LinearLayout
@@ -84,60 +84,43 @@ class MainActivity : AppCompatActivity() {
         checkForUpdate()
         Thread { NoteTranscriber.resumePendingNotes(applicationContext) }.start()
 
-        val outer = vertical(0, 0)
+        val outer = vertical(0, 0).apply {
+            setBackgroundColor(OpenWisprUi.BACKGROUND)
+        }
 
         val backToNotesBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(20), dp(20), dp(20), 0)
+            setPadding(dp(8), dp(8), dp(16), 0)
             val backText = TextView(this@MainActivity).apply {
-                text = "← Back to Notes"
-                textSize = 15f
+                text = "‹"
+                contentDescription = "Back to notes"
+                textSize = 32f
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(0xFF3B82F6.toInt())
-                setPadding(0, dp(8), dp(16), dp(8))
+                gravity = Gravity.CENTER
+                minWidth = dp(48)
+                minHeight = dp(48)
                 isClickable = true
                 isFocusable = true
                 setOnClickListener { showNotesScreen() }
             }
             addView(backText)
-        }
-        outer.addView(backToNotesBar)
-
-        // Top large header (like "Connected devices"), with the app icon
-        // alongside the name.
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(24), dp(64), dp(24), dp(24))
-        }
-        header.addView(ImageView(this).apply {
-            setImageResource(R.mipmap.ic_launcher)
-            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(12) }
-        })
-        header.addView(TextView(this).apply {
-            text = "OpenWispr"
-            textSize = 32f
-        })
-        outer.addView(header)
-
-        tabLayout = TabLayout(this).apply {
-            addTab(newTab().setText("Status"))
-            addTab(newTab().setText("Dictation"))
-            addTab(newTab().setText("Settings"))
-            addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
-                override fun onTabSelected(tab: TabLayout.Tab) { showTab(tab.position) }
-                override fun onTabUnselected(tab: TabLayout.Tab) {}
-                override fun onTabReselected(tab: TabLayout.Tab) {}
+            addView(TextView(this@MainActivity).apply {
+                text = "Settings"
+                textSize = 20f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(OpenWisprUi.TEXT)
             })
         }
-        outer.addView(tabLayout)
+        outer.addView(backToNotesBar)
 
         statusContainer = vertical(0)
         dictationContainer = vertical(0)
         settingsContainer = vertical(0)
 
-        // ================= Status tab =================
+        // Setup and status live inside the unified Settings destination.
+        statusContainer.addView(sectionHeader("SETUP & STATUS"))
 
         val statusRow = settingsRow("Status", "Checking...")
         statusSubtitle = statusRow.findViewWithTag("subtitle")
@@ -180,7 +163,7 @@ class MainActivity : AppCompatActivity() {
         statusContainer.addView(accRow)
 
         accCaption = TextView(this).apply {
-            text = "Needed to detect the focused text field and insert the cleaned-up text there."
+            text = "Used to insert dictated text into the active text field."
             textSize = 12f
             setTextColor(attrColor(android.R.attr.textColorSecondary))
             alpha = 0.8f
@@ -213,9 +196,9 @@ class MainActivity : AppCompatActivity() {
         }
         statusContainer.addView(serviceRow)
 
-        // ================= Dictation tab =================
+        // ================= Transcription and dictation =================
 
-        dictationContainer.addView(sectionHeader("Engine"))
+        dictationContainer.addView(sectionHeader("TRANSCRIPTION"))
 
         val isCloud = !prefs().getBoolean("use_local", true)
         val cloudSwitch = MaterialSwitch(this).apply {
@@ -235,7 +218,7 @@ class MainActivity : AppCompatActivity() {
         for (m in MODEL_CATALOG) modelContainer.addView(buildModelRow(m))
         dictationContainer.addView(modelContainer)
 
-        dictationContainer.addView(sectionHeader("Post-Processing"))
+        dictationContainer.addView(sectionHeader("POST-PROCESSING"))
 
         val isPostProcessing = prefs().getBoolean("use_post_processing", false)
         val postProcessSwitch = MaterialSwitch(this).apply {
@@ -258,7 +241,7 @@ class MainActivity : AppCompatActivity() {
         customInstructionsRowSub.ellipsize = android.text.TextUtils.TruncateAt.END
         dictationContainer.addView(customInstructionsRow)
 
-        dictationContainer.addView(sectionHeader("Voice Commands"))
+        dictationContainer.addView(sectionHeader("DICTATION & OVERLAY"))
 
         val isVoiceCommands = prefs().getBoolean("voice_commands_enabled", false)
         val voiceCommandsSwitch = MaterialSwitch(this).apply {
@@ -290,13 +273,13 @@ class MainActivity : AppCompatActivity() {
 
         // ================= Settings tab =================
 
-        settingsContainer.addView(sectionHeader("Settings"))
+        settingsContainer.addView(sectionHeader("ACCOUNT & API"))
 
         val keyRow = settingsRow("Groq API Key", "Tap to set") { promptApiKey() }
         keyRowSub = keyRow.findViewWithTag("subtitle")
         settingsContainer.addView(keyRow)
 
-        settingsContainer.addView(sectionHeader("About"))
+        settingsContainer.addView(sectionHeader("ABOUT"))
 
         val versionName = try {
             packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
@@ -317,13 +300,12 @@ class MainActivity : AppCompatActivity() {
             checkForUpdate(force = true)
         })
 
-        outer.addView(statusContainer)
         outer.addView(dictationContainer)
+        outer.addView(statusContainer)
         outer.addView(settingsContainer)
-        showTab(0)
 
         settingsScrollView = ScrollView(this).apply {
-            setBackgroundColor(attrColor(android.R.attr.colorBackground))
+            setBackgroundColor(OpenWisprUi.BACKGROUND)
             addView(outer)
             visibility = View.GONE
         }
@@ -335,6 +317,11 @@ class MainActivity : AppCompatActivity() {
         rootContainer = FrameLayout(this).apply {
             addView(notesView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             addView(settingsScrollView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(rootContainer) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
         }
 
         setContentView(rootContainer)
@@ -386,12 +373,6 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onRequestPermissionsResult(c: Int, p: Array<String>, r: IntArray) {
         super.onRequestPermissionsResult(c, p, r); refresh()
-    }
-
-    private fun showTab(index: Int) {
-        statusContainer.visibility = if (index == 0) View.VISIBLE else View.GONE
-        dictationContainer.visibility = if (index == 1) View.VISIBLE else View.GONE
-        settingsContainer.visibility = if (index == 2) View.VISIBLE else View.GONE
     }
 
     // --- Model Rows ---

@@ -15,7 +15,11 @@ import android.view.ViewGroup
 import android.view.Window
 import android.widget.*
 import androidx.appcompat.widget.PopupMenu
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.File
 
 /**
@@ -59,13 +63,13 @@ class NoteDetailDialog(
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
-        window?.setBackgroundDrawable(ColorDrawable(0xFF111111.toInt()))
+        window?.setBackgroundDrawable(ColorDrawable(OpenWisprUi.BACKGROUND))
         window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
 
         val root = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xFF111111.toInt())
-            setPadding(dp(20), dp(24), dp(20), dp(32))
+            setBackgroundColor(OpenWisprUi.BACKGROUND)
+            setPadding(dp(16), dp(12), dp(16), dp(32))
         }
 
         // ================= TOP BAR: Back | More =================
@@ -78,15 +82,14 @@ class NoteDetailDialog(
             layoutParams = lp
         }
 
-        val backBtn = TextView(context).apply {
-            text = "← Back"
-            textSize = 16f
-            setTextColor(0xFFE0E0E0.toInt())
-            setTypeface(typeface, Typeface.BOLD)
-            setPadding(0, dp(8), dp(16), dp(8))
-            isClickable = true
-            isFocusable = true
+        val backBtn = OpenWisprUi.iconButton(context, "‹", "Back to notes").apply {
+            textSize = 32f
             setOnClickListener { dismiss() }
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(dp(16) + bars.left, dp(12) + bars.top, dp(16) + bars.right, dp(32) + bars.bottom)
+            insets
         }
         topBar.addView(backBtn)
 
@@ -95,14 +98,7 @@ class NoteDetailDialog(
         }
         topBar.addView(spacer)
 
-        val moreBtn = TextView(context).apply {
-            text = "More ⋮"
-            textSize = 16f
-            setTextColor(0xFFE0E0E0.toInt())
-            setTypeface(typeface, Typeface.BOLD)
-            setPadding(dp(16), dp(8), 0, dp(8))
-            isClickable = true
-            isFocusable = true
+        val moreBtn = OpenWisprUi.iconButton(context, "⋮", "More note actions").apply {
             setOnClickListener { v -> showMoreMenu(v) }
         }
         topBar.addView(moreBtn)
@@ -129,10 +125,7 @@ class NoteDetailDialog(
         val playerCard = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(16), dp(16), dp(16))
-            background = GradientDrawable().apply {
-                setColor(0xFF1E1E1E.toInt())
-                cornerRadius = 12 * d
-            }
+            background = OpenWisprUi.surface(context)
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(24)
             }
@@ -145,13 +138,15 @@ class NoteDetailDialog(
         }
 
         playBtn = MaterialButton(context).apply {
-            text = "Play"
-            textSize = 14f
+            text = "▶"
+            contentDescription = "Play recording"
+            textSize = 20f
             setTextColor(0xFFFFFFFF.toInt())
             setBackgroundColor(0xFF2A2A2A.toInt())
             cornerRadius = dp(8)
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            minWidth = dp(70)
+            minWidth = dp(48)
+            minHeight = dp(48)
             setOnClickListener { togglePlay() }
         }
         controlsRow.addView(playBtn)
@@ -198,7 +193,7 @@ class NoteDetailDialog(
 
         // Space aligned under play button
         val dummySpacer = View(context).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(70), 1)
+            layoutParams = LinearLayout.LayoutParams(dp(48), 1)
         }
         timeRow.addView(dummySpacer)
 
@@ -213,11 +208,14 @@ class NoteDetailDialog(
 
         speedBtn = MaterialButton(context, null, android.R.attr.borderlessButtonStyle).apply {
             text = "1×"
+            contentDescription = "Playback speed, 1 times"
             textSize = 13f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(0xFF9E9E9E.toInt())
+            backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
             setPadding(dp(8), 0, dp(8), 0)
             minWidth = dp(40)
+            minHeight = dp(48)
             setOnClickListener { cycleSpeed() }
         }
         timeRow.addView(speedBtn)
@@ -273,7 +271,7 @@ class NoteDetailDialog(
         transcriptLabelRow.addView(transcriptLabel)
 
         editedBadge = TextView(context).apply {
-            text = " · Edited"
+            text = "  Edited"
             textSize = 12f
             setTextColor(0xFF3B82F6.toInt())
             visibility = View.GONE
@@ -295,7 +293,7 @@ class NoteDetailDialog(
 
         // View original button (if edited)
         viewOriginalBtn = MaterialButton(context, null, android.R.attr.borderlessButtonStyle).apply {
-            text = "View original transcription"
+            text = "Edited   ·   Original"
             textSize = 13f
             setTextColor(0xFF888888.toInt())
             visibility = View.GONE
@@ -396,9 +394,11 @@ class NoteDetailDialog(
         val note = currentNote ?: return
         if (player.isPlaying) {
             player.pause()
-            playBtn.text = "Play"
+            playBtn.text = "▶"
+            playBtn.contentDescription = "Resume recording"
         } else {
-            playBtn.text = "Pause"
+            playBtn.text = "Ⅱ"
+            playBtn.contentDescription = "Pause recording"
             player.play(
                 audioPath = note.audioPath,
                 speed = playbackSpeed,
@@ -410,12 +410,14 @@ class NoteDetailDialog(
                     }
                 },
                 onCompletion = {
-                    playBtn.text = "Play"
+                    playBtn.text = "▶"
+                    playBtn.contentDescription = "Play recording"
                     seekBar.progress = 0
                     elapsedText.text = "00:00"
                 },
                 onError = { err ->
-                    playBtn.text = "Play"
+                    playBtn.text = "▶"
+                    playBtn.contentDescription = "Play recording"
                     Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
                 }
             )
@@ -429,13 +431,13 @@ class NoteDetailDialog(
             else -> 1.0f
         }
         speedBtn.text = "${playbackSpeed}×"
+        speedBtn.contentDescription = "Playback speed, ${playbackSpeed} times"
         player.setSpeed(playbackSpeed)
     }
 
     /**
      * MORE MENU: ONLY:
      * - Pin / Unpin
-     * - Share
      * - Retranscribe
      * - Delete
      */
@@ -443,7 +445,6 @@ class NoteDetailDialog(
         val note = currentNote ?: return
         val popup = PopupMenu(context, anchor)
         popup.menu.add(if (note.isPinned) "Unpin" else "Pin")
-        popup.menu.add("Share")
         popup.menu.add("Retranscribe")
         popup.menu.add("Delete")
 
@@ -453,10 +454,6 @@ class NoteDetailDialog(
                     repo.togglePinned(note.id)
                     loadNote()
                     onNoteChanged()
-                    true
-                }
-                "Share" -> {
-                    showShareOptions()
                     true
                 }
                 "Retranscribe" -> {
@@ -477,17 +474,35 @@ class NoteDetailDialog(
 
     private fun showShareOptions() {
         val note = currentNote ?: return
-        val options = arrayOf("Share transcript", "Share audio", "Share audio & transcript")
-        AlertDialog.Builder(context)
-            .setTitle("Share")
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> NoteShareHelper.shareTranscript(context, note)
-                    1 -> NoteShareHelper.shareAudio(context, note)
-                    2 -> NoteShareHelper.shareAudioAndTranscript(context, note)
-                }
-            }
-            .show()
+        val sheet = BottomSheetDialog(context)
+        val body = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(24))
+            setBackgroundColor(OpenWisprUi.SURFACE)
+            addView(TextView(context).apply {
+                text = "Share"
+                textSize = 20f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(OpenWisprUi.TEXT)
+                setPadding(dp(4), dp(12), dp(4), dp(12))
+            })
+        }
+        fun option(title: String, subtitle: String, action: () -> Unit) = TextView(context).apply {
+            text = "$title\n$subtitle"
+            textSize = 16f
+            setTextColor(OpenWisprUi.TEXT)
+            setLineSpacing(dp(3).toFloat(), 1f)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            minHeight = dp(64)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { sheet.dismiss(); action() }
+        }
+        body.addView(option("Share transcript", "Share text only") { NoteShareHelper.shareTranscript(context, note) })
+        body.addView(option("Share audio", "Share the original recording") { NoteShareHelper.shareAudio(context, note) })
+        body.addView(option("Share audio & transcript", "Share both files together") { NoteShareHelper.shareAudioAndTranscript(context, note) })
+        sheet.setContentView(body)
+        sheet.show()
     }
 
     private fun promptEditTranscript() {
@@ -505,7 +520,7 @@ class NoteDetailDialog(
             setBackgroundColor(0xFF222222.toInt())
         }
 
-        AlertDialog.Builder(context)
+        MaterialAlertDialogBuilder(context)
             .setTitle("Edit transcript")
             .setMessage("Original audio and original ASR transcript remain preserved.")
             .setView(input)
@@ -535,7 +550,7 @@ class NoteDetailDialog(
             setTextIsSelectable(true)
         }
 
-        AlertDialog.Builder(context)
+        MaterialAlertDialogBuilder(context)
             .setTitle("Original transcription")
             .setView(tv)
             .setPositiveButton("Revert to this") { _, _ ->
@@ -548,9 +563,9 @@ class NoteDetailDialog(
     }
 
     private fun confirmDelete(note: Note) {
-        AlertDialog.Builder(context)
-            .setTitle("Delete note?")
-            .setMessage("This will delete the note and its audio recording permanently.")
+        MaterialAlertDialogBuilder(context)
+            .setTitle("Delete voice note?")
+            .setMessage("This permanently deletes the recording and transcript.")
             .setPositiveButton("Delete") { _, _ ->
                 player.stop()
                 repo.deleteNote(note.id)

@@ -3,7 +3,6 @@ package com.edib.openwhispr
 import android.app.Activity
 import android.content.Context
 import android.content.res.ColorStateList
-import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.text.Editable
@@ -52,16 +51,16 @@ class NotesTimelineView(
     private fun dp(v: Int) = (v * d).toInt()
 
     init {
-        setBackgroundColor(0xFF111111.toInt())
+        setBackgroundColor(OpenWisprUi.BACKGROUND)
 
         val scrollView = ScrollView(context).apply {
             isFillViewport = true
-            setBackgroundColor(0xFF111111.toInt())
+            setBackgroundColor(OpenWisprUi.BACKGROUND)
         }
 
         container = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(24), dp(20), dp(100))
+            setPadding(dp(16), dp(12), dp(16), dp(100))
         }
 
         // ================= TOP BAR: OpenWispr | Search | Settings =================
@@ -69,40 +68,26 @@ class NotesTimelineView(
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(16)
+                bottomMargin = dp(10)
             }
             layoutParams = lp
         }
 
         val brandTitle = TextView(context).apply {
             text = "OpenWispr"
-            textSize = 22f
+            textSize = 20f
             setTypeface(typeface, Typeface.BOLD)
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(OpenWisprUi.TEXT)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         topBar.addView(brandTitle)
 
-        val searchBtn = TextView(context).apply {
-            text = "Search"
-            textSize = 15f
-            setTextColor(0xFFE0E0E0.toInt())
-            setTypeface(typeface, Typeface.BOLD)
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            isClickable = true
-            isFocusable = true
+        val searchBtn = OpenWisprUi.iconButton(context, "⌕", "Search notes").apply {
             setOnClickListener { toggleSearch() }
         }
         topBar.addView(searchBtn)
 
-        val settingsBtn = TextView(context).apply {
-            text = "Settings"
-            textSize = 15f
-            setTextColor(0xFFE0E0E0.toInt())
-            setTypeface(typeface, Typeface.BOLD)
-            setPadding(dp(12), dp(8), 0, dp(8))
-            isClickable = true
-            isFocusable = true
+        val settingsBtn = OpenWisprUi.iconButton(context, "⚙", "Settings").apply {
             setOnClickListener { onOpenSettings() }
         }
         topBar.addView(settingsBtn)
@@ -112,22 +97,25 @@ class NotesTimelineView(
         // ================= SECTION TITLE: Notes =================
         val notesTitle = TextView(context).apply {
             text = "Notes"
-            textSize = 28f
+            textSize = 26f
             setTypeface(typeface, Typeface.BOLD)
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, 0, 0, dp(12))
+            setTextColor(OpenWisprUi.TEXT)
+            setPadding(0, 0, 0, dp(2))
         }
         container.addView(notesTitle)
+        container.addView(TextView(context).apply {
+            text = "Your voice, captured."
+            textSize = 14f
+            setTextColor(OpenWisprUi.TEXT_SECONDARY)
+            setPadding(0, 0, 0, dp(12))
+        })
 
         // ================= SEARCH BAR (Expandable) =================
         searchBarLayout = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), dp(8), dp(14), dp(8))
-            background = GradientDrawable().apply {
-                setColor(0xFF1E1E1E.toInt())
-                cornerRadius = 8 * d
-            }
+            background = OpenWisprUi.surface(context)
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(16)
             }
@@ -136,12 +124,12 @@ class NotesTimelineView(
         }
 
         searchEditText = EditText(context).apply {
-            hint = "Search notes (Arabic or English)..."
+            hint = "Search notes…"
             setHintTextColor(0xFF757575.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 15f
             background = null
-            textDirection = View.TEXT_DIRECTION_LOCALE
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
             textAlignment = View.TEXT_ALIGNMENT_VIEW_START
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             addTextChangedListener(object : TextWatcher {
@@ -156,10 +144,13 @@ class NotesTimelineView(
         searchBarLayout.addView(searchEditText)
 
         val clearSearchBtn = TextView(context).apply {
-            text = "✕"
+            text = "×"
+            contentDescription = "Close search"
             textSize = 14f
             setTextColor(0xFF888888.toInt())
-            setPadding(dp(8), dp(4), dp(4), dp(4))
+            gravity = Gravity.CENTER
+            minWidth = dp(48)
+            minHeight = dp(48)
             isClickable = true
             isFocusable = true
             setOnClickListener {
@@ -177,9 +168,9 @@ class NotesTimelineView(
         container.addView(notesListLayout)
 
         emptyView = TextView(context).apply {
-            text = "No notes yet.\nTap the mic below to start recording."
-            textSize = 15f
-            setTextColor(0xFF757575.toInt())
+            text = "No voice notes yet\n\nYour voice, captured.\nTap the microphone to record your first note."
+            textSize = 16f
+            setTextColor(OpenWisprUi.TEXT_SECONDARY)
             gravity = Gravity.CENTER
             setPadding(dp(24), dp(48), dp(24), dp(48))
             visibility = View.GONE
@@ -217,7 +208,7 @@ class NotesTimelineView(
         recordingOverlay = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(0xFF111111.toInt())
+            setBackgroundColor(OpenWisprUi.BACKGROUND)
             setPadding(dp(32), dp(48), dp(32), dp(48))
             visibility = View.GONE
             isClickable = true
@@ -249,7 +240,7 @@ class NotesTimelineView(
         recordingOverlay.addView(recLevelIndicator)
 
         val recLabel = TextView(context).apply {
-            text = "Recording voice note"
+            text = "Recording voice note\n\nTap stop when you're done"
             textSize = 14f
             setTextColor(0xFF888888.toInt())
             gravity = Gravity.CENTER
@@ -381,9 +372,9 @@ class NotesTimelineView(
         if (allNotes.isEmpty()) {
             emptyView.visibility = View.VISIBLE
             if (currentSearchQuery.isNotEmpty()) {
-                emptyView.text = "No notes matching \"$currentSearchQuery\""
+                emptyView.text = "No results\n\nTry another search."
             } else {
-                emptyView.text = "No notes yet.\nTap the mic below to start recording."
+                emptyView.text = "No voice notes yet\n\nYour voice, captured.\nTap the microphone to record your first note."
             }
             return
         } else {
@@ -424,10 +415,7 @@ class NotesTimelineView(
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(14))
-            background = GradientDrawable().apply {
-                setColor(0xFF1E1E1E.toInt())
-                cornerRadius = 10 * d
-            }
+            background = OpenWisprUi.surface(context)
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(10)
             }
@@ -449,19 +437,30 @@ class NotesTimelineView(
             text = note.title
             textSize = 15f
             setTypeface(typeface, Typeface.BOLD)
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(OpenWisprUi.TEXT)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         titleRow.addView(titleTv)
 
-        if (note.isPinned) {
-            val pinIndicator = TextView(context).apply {
-                text = "📌"
-                textSize = 13f
-                setPadding(dp(4), 0, 0, 0)
+        val more = OpenWisprUi.iconButton(context, if (note.isPinned) "•" else "⋮", if (note.isPinned) "Pinned note options" else "Note options").apply {
+            textSize = 22f
+            setOnClickListener { anchor ->
+                PopupMenu(context, anchor).apply {
+                    menu.add(if (note.isPinned) "Unpin note" else "Pin note")
+                    menu.add("Retranscribe")
+                    setOnMenuItemClickListener { item ->
+                        when (item.title.toString()) {
+                            "Pin note", "Unpin note" -> repo.togglePinned(note.id)
+                            "Retranscribe" -> NoteTranscriber.transcribeNoteAsync(context, note.id)
+                        }
+                        refreshNotes()
+                        true
+                    }
+                    show()
+                }
             }
-            titleRow.addView(pinIndicator)
         }
+        titleRow.addView(more, LinearLayout.LayoutParams(dp(48), dp(48)))
         card.addView(titleRow)
 
         // Body content based on transcription state: PENDING, FAILED, COMPLETE
@@ -512,7 +511,7 @@ class NotesTimelineView(
                 val transcriptPreview = TextView(context).apply {
                     text = note.displayTranscript ?: ""
                     textSize = 14f
-                    maxLines = 3
+                    maxLines = 2
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     setTextColor(0xFFE0E0E0.toInt())
                     textDirection = View.TEXT_DIRECTION_FIRST_STRONG
@@ -523,9 +522,9 @@ class NotesTimelineView(
             }
         }
 
-        // Footer: 🎙 duration · time
+        // Compact playback metadata. Opening the card exposes the full player.
         val footer = TextView(context).apply {
-            text = "🎙 ${Note.formatDuration(note.audioDurationMs)} · ${Note.formatFooterTime(note.createdAt)}"
+            text = "▶  ${Note.formatDuration(note.audioDurationMs)}                              ${Note.formatFooterTime(note.createdAt)}"
             textSize = 12f
             setTextColor(0xFF757575.toInt())
         }

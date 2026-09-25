@@ -20,18 +20,19 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * Converts arbitrary user-selected audio into OpenWispr's canonical ASR input:
- * PCM16 mono 16 kHz WAV.
+ * Converts arbitrary selected audio into OpenWispr's canonical ASR input:
+ * PCM16 mono 16-kHz WAV.
  *
- * The conversion is deliberately conservative:
- * - native Android decoder (no lossy re-encode through a media container)
- * - channel downmix in float
- * - linear resampling to the model rate
- * - very-low-cut DC/rumble removal
- * - bounded active-speech RMS normalization with peak protection
+ * Pipeline:
+ * 1) Android MediaExtractor/MediaCodec decode (MP3/M4A/AAC/Opus/WAV etc.)
+ * 2) float-domain channel downmix
+ * 3) band-limited 16-kHz resampling (sherpa/Kaldi-style windowed sinc)
+ * 4) very-low-cut DC/rumble removal
+ * 5) bounded active-speech RMS normalization with peak protection
  *
- * The normalized WAV is only an ASR working copy. It avoids feeding different
- * sample rates/channel layouts/levels into the recognizer.
+ * No denoiser, compressor, EQ, or speech enhancement is applied because those
+ * can alter phonemes and hurt ASR. The goal is clean format/level consistency,
+ * not cosmetic audio processing.
  */
 object AudioImportProcessor {
     private const val TARGET_RATE = 16_000
@@ -54,43 +55,48 @@ object AudioImportProcessor {
 
     fun prepare(context: Context, uri: Uri): PreparedAudio {
         val extractor = MediaExtractor()
-        var codec: MediaCodec? = null
+        var decoder: MediaCodec? = null
         val id = UUID.randomUUID().toString()
         val rawPcm = File(context.cacheDir, "import-$id.pcm")
         val finalWav = File(context.cacheDir, "import-$id.wav")
 
         try {
             extractor.setDataSource(context, uri, null)
+
             val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
-                val mime = extractor.getTrackFormat(index)
+                extractor.getTrackFormat(index)
                     .getString(MediaFormat.KEY_MIME)
                     .orEmpty()
-                mime.startsWith("audio/")
+                    .startsWith("audio/")
             } ?: throw IllegalArgumentException("No audio track found in this file")
 
             extractor.selectTrack(trackIndex)
             val sourceFormat = extractor.getTrackFormat(trackIndex)
             val mime = sourceFormat.getString(MediaFormat.KEY_MIME)
                 ?: throw IllegalArgumentException("Unknown audio format")
-            val declaredRate = sourceFormat.getIntegerOrNull(MediaFormat.KEY_SAMPLE_RATE) ?: TARGET_RATE
-            val declaredChannels = sourceFormat.getIntegerOrNull(MediaFormat.KEY_CHANNEL_COUNT) ?: 1
+            val declaredRate =
+                sourceFormat.getIntegerOrNull(MediaFormat.KEY_SAMPLE_RATE) ?: TARGET_RATE
+            val declaredChannels =
+                sourceFormat.getIntegerOrNull(MediaFormat.KEY_CHANNEL_COUNT) ?: 1
 
-            val decoder = MediaCodec.createDecoderByType(mime)
-            codec = decoder
-            decoder.configure(sourceFormat, null, null, 0)
-            decoder.start()
+            val mediaDecoder = MediaCodec.createDecoderByType(mime)
+            decoder = mediaDecoder
+            mediaDecoder.configure(sourceFormat, null, null, 0)
+            mediaDecoder.start()
 
             var currentRate = declaredRate
             var currentChannels = declaredChannels
             var currentEncoding = AudioFormat.ENCODING_PCM_16BIT
-            var resampler: StreamingResampler? = null
+            var resampler: BandLimitedResampler? = null
+            var resamplerInputRate: Int? = null
+
             var outputSamples = 0L
             var peak = 0f
             var activeSquareSum = 0.0
             var activeCount = 0L
 
-            // High-pass at ~20 Hz after resampling: removes DC/handling rumble
-            // without cutting useful speech fundamentals.
+            // High-pass ~20 Hz after resampling. This only removes DC and
+            // sub-audible handling rumble; speech fundamentals are untouched.
             val hpAlpha = exp(-2.0 * PI * 20.0 / TARGET_RATE).toFloat()
             var hpPrevX = 0f
             var hpPrevY = 0f
@@ -98,34 +104,44 @@ object AudioImportProcessor {
             BufferedOutputStream(FileOutputStream(rawPcm), 64 * 1024).use { pcmOut ->
                 fun acceptCanonical(sample: Float) {
                     val x = sample.coerceIn(-1f, 1f)
-                    val filtered = (x - hpPrevX + hpAlpha * hpPrevY).coerceIn(-1f, 1f)
+                    val filtered =
+                        (x - hpPrevX + hpAlpha * hpPrevY).coerceIn(-1f, 1f)
                     hpPrevX = x
                     hpPrevY = filtered
 
-                    val abs = kotlin.math.abs(filtered)
-                    if (abs > peak) peak = abs
-                    if (abs >= ACTIVE_THRESHOLD) {
+                    val magnitude = kotlin.math.abs(filtered)
+                    if (magnitude > peak) peak = magnitude
+                    if (magnitude >= ACTIVE_THRESHOLD) {
                         activeSquareSum += filtered.toDouble() * filtered.toDouble()
                         activeCount++
                     }
 
-                    val s = (filtered * 32767f).toInt().coerceIn(-32768, 32767)
-                    pcmOut.write(s and 0xff)
-                    pcmOut.write((s shr 8) and 0xff)
+                    val pcm16 =
+                        (filtered * 32767f).toInt().coerceIn(-32768, 32767)
+                    pcmOut.write(pcm16 and 0xff)
+                    pcmOut.write((pcm16 shr 8) and 0xff)
                     outputSamples++
                 }
 
-                fun ensureResampler(rate: Int): StreamingResampler {
-                    val existing = resampler
-                    if (existing != null) {
-                        require(existing.inputRate == rate) {
+                fun feedDecodedMono(samples: FloatArray, sampleRate: Int) {
+                    if (samples.isEmpty()) return
+                    if (sampleRate == TARGET_RATE) {
+                        samples.forEach(::acceptCanonical)
+                        return
+                    }
+
+                    if (resampler == null) {
+                        resamplerInputRate = sampleRate
+                        resampler =
+                            BandLimitedResampler(sampleRate, TARGET_RATE)
+                    } else {
+                        require(resamplerInputRate == sampleRate) {
                             "Audio sample rate changed during decode"
                         }
-                        return existing
                     }
-                    return StreamingResampler(rate, TARGET_RATE, ::acceptCanonical).also {
-                        resampler = it
-                    }
+
+                    resampler!!.resample(samples, flush = false)
+                        .forEach(::acceptCanonical)
                 }
 
                 val info = MediaCodec.BufferInfo()
@@ -134,74 +150,107 @@ object AudioImportProcessor {
 
                 while (!outputDone) {
                     if (!inputDone) {
-                        val inputIndex = decoder.dequeueInputBuffer(10_000)
+                        val inputIndex = mediaDecoder.dequeueInputBuffer(10_000)
                         if (inputIndex >= 0) {
-                            val input = decoder.getInputBuffer(inputIndex)
-                                ?: throw IllegalStateException("Decoder input buffer unavailable")
+                            val input = mediaDecoder.getInputBuffer(inputIndex)
+                                ?: throw IllegalStateException(
+                                    "Decoder input buffer unavailable"
+                                )
                             input.clear()
+
                             val size = extractor.readSampleData(input, 0)
                             if (size < 0) {
-                                decoder.queueInputBuffer(
-                                    inputIndex, 0, 0, 0,
+                                mediaDecoder.queueInputBuffer(
+                                    inputIndex,
+                                    0,
+                                    0,
+                                    0,
                                     MediaCodec.BUFFER_FLAG_END_OF_STREAM
                                 )
                                 inputDone = true
                             } else {
-                                decoder.queueInputBuffer(
-                                    inputIndex, 0, size, extractor.sampleTime, 0
+                                mediaDecoder.queueInputBuffer(
+                                    inputIndex,
+                                    0,
+                                    size,
+                                    extractor.sampleTime,
+                                    0
                                 )
                                 extractor.advance()
                             }
                         }
                     }
 
-                    when (val outputIndex = decoder.dequeueOutputBuffer(info, 10_000)) {
+                    when (
+                        val outputIndex =
+                            mediaDecoder.dequeueOutputBuffer(info, 10_000)
+                    ) {
                         MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            val outputFormat = decoder.outputFormat
-                            currentRate = outputFormat.getIntegerOrNull(MediaFormat.KEY_SAMPLE_RATE)
-                                ?: currentRate
-                            currentChannels = outputFormat.getIntegerOrNull(MediaFormat.KEY_CHANNEL_COUNT)
-                                ?: currentChannels
-                            currentEncoding = outputFormat.getIntegerOrNull(MediaFormat.KEY_PCM_ENCODING)
-                                ?: AudioFormat.ENCODING_PCM_16BIT
+                            val outputFormat = mediaDecoder.outputFormat
+                            currentRate =
+                                outputFormat.getIntegerOrNull(
+                                    MediaFormat.KEY_SAMPLE_RATE
+                                ) ?: currentRate
+                            currentChannels =
+                                outputFormat.getIntegerOrNull(
+                                    MediaFormat.KEY_CHANNEL_COUNT
+                                ) ?: currentChannels
+                            currentEncoding =
+                                outputFormat.getIntegerOrNull(
+                                    MediaFormat.KEY_PCM_ENCODING
+                                ) ?: AudioFormat.ENCODING_PCM_16BIT
                         }
 
                         MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
 
                         else -> if (outputIndex >= 0) {
-                            if (info.size > 0) {
-                                val output = decoder.getOutputBuffer(outputIndex)
-                                    ?: throw IllegalStateException("Decoder output buffer unavailable")
-                                val duplicate = output.duplicate().order(ByteOrder.LITTLE_ENDIAN)
+                            val isCodecConfig =
+                                (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+
+                            if (info.size > 0 && !isCodecConfig) {
+                                val output =
+                                    mediaDecoder.getOutputBuffer(outputIndex)
+                                        ?: throw IllegalStateException(
+                                            "Decoder output buffer unavailable"
+                                        )
+                                val duplicate =
+                                    output.duplicate().order(ByteOrder.LITTLE_ENDIAN)
                                 duplicate.position(info.offset)
                                 duplicate.limit(info.offset + info.size)
-                                val slice = duplicate.slice().order(ByteOrder.LITTLE_ENDIAN)
+                                val slice =
+                                    duplicate.slice().order(ByteOrder.LITTLE_ENDIAN)
 
-                                val rs = ensureResampler(currentRate)
-                                decodeInterleavedPcm(
+                                val mono = decodeInterleavedPcm(
                                     slice,
                                     currentChannels.coerceAtLeast(1),
                                     currentEncoding
-                                ) { mono ->
-                                    rs.accept(mono)
-                                }
+                                )
+                                feedDecodedMono(mono, currentRate)
                             }
 
                             outputDone =
                                 (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                            decoder.releaseOutputBuffer(outputIndex, false)
+                            mediaDecoder.releaseOutputBuffer(outputIndex, false)
                         }
                     }
                 }
+
+                // Emit the resampler tail using zero-padding exactly as the
+                // underlying sherpa/Kaldi algorithm does at end-of-stream.
+                resampler?.resample(FloatArray(0), flush = true)
+                    ?.forEach(::acceptCanonical)
             }
 
-            require(outputSamples > 0) { "Decoder produced no audio samples" }
+            require(outputSamples > 0) {
+                "Decoder produced no audio samples"
+            }
 
             val activeRms = if (activeCount > 0) {
                 sqrt(activeSquareSum / activeCount.toDouble()).toFloat()
             } else {
                 0f
             }
+
             val rmsGain = if (activeRms > 0f) {
                 (TARGET_ACTIVE_RMS / activeRms).coerceIn(MIN_GAIN, MAX_GAIN)
             } else {
@@ -221,10 +270,11 @@ object AudioImportProcessor {
                 appliedGain = gain
             )
         } finally {
-            runCatching { codec?.stop() }
-            runCatching { codec?.release() }
+            runCatching { decoder?.stop() }
+            runCatching { decoder?.release() }
             runCatching { extractor.release() }
             rawPcm.delete()
+
             if (!finalWav.exists() || finalWav.length() <= 44L) {
                 finalWav.delete()
             }
@@ -234,9 +284,8 @@ object AudioImportProcessor {
     private fun decodeInterleavedPcm(
         buffer: ByteBuffer,
         channels: Int,
-        encoding: Int,
-        onMonoSample: (Float) -> Unit
-    ) {
+        encoding: Int
+    ): FloatArray {
         val bytesPerSample = when (encoding) {
             AudioFormat.ENCODING_PCM_8BIT -> 1
             AudioFormat.ENCODING_PCM_FLOAT,
@@ -244,10 +293,15 @@ object AudioImportProcessor {
             AudioFormat.ENCODING_PCM_24BIT_PACKED -> 3
             else -> 2
         }
-        val frameBytes = bytesPerSample * channels
-        if (frameBytes <= 0) return
 
-        while (buffer.remaining() >= frameBytes) {
+        val frameBytes = bytesPerSample * channels
+        if (frameBytes <= 0) return FloatArray(0)
+
+        val frameCount = buffer.remaining() / frameBytes
+        val mono = FloatArray(frameCount)
+
+        var frame = 0
+        while (frame < frameCount) {
             var sum = 0f
             repeat(channels) {
                 sum += when (encoding) {
@@ -261,7 +315,7 @@ object AudioImportProcessor {
                         val b0 = buffer.get().toInt() and 0xff
                         val b1 = buffer.get().toInt() and 0xff
                         val b2 = buffer.get().toInt()
-                        val value = (b0 or (b1 shl 8) or (b2 shl 16))
+                        val value = b0 or (b1 shl 8) or (b2 shl 16)
                         value / 8_388_608f
                     }
 
@@ -272,8 +326,13 @@ object AudioImportProcessor {
                         buffer.short / 32768f
                 }
             }
-            onMonoSample((sum / channels.toFloat()).coerceIn(-1f, 1f))
+
+            mono[frame] =
+                (sum / channels.toFloat()).coerceIn(-1f, 1f)
+            frame++
         }
+
+        return mono
     }
 
     private fun writeNormalizedWav(
@@ -283,34 +342,55 @@ object AudioImportProcessor {
         gain: Float
     ) {
         val dataSize = sampleCount * 2L
-        require(dataSize <= Int.MAX_VALUE.toLong()) { "Imported audio is too long" }
+        require(dataSize <= Int.MAX_VALUE.toLong()) {
+            "Imported audio is too long"
+        }
 
-        BufferedOutputStream(FileOutputStream(destination), 64 * 1024).use { out ->
+        BufferedOutputStream(
+            FileOutputStream(destination),
+            64 * 1024
+        ).use { out ->
             out.write(wavHeader(dataSize.toInt(), TARGET_RATE))
-            BufferedInputStream(FileInputStream(sourcePcm), 64 * 1024).use { input ->
+
+            BufferedInputStream(
+                FileInputStream(sourcePcm),
+                64 * 1024
+            ).use { input ->
                 while (true) {
                     val lo = input.read()
                     if (lo < 0) break
                     val hi = input.read()
                     if (hi < 0) break
-                    val sample = (((hi shl 8) or lo).toShort().toInt())
-                    val scaled = (sample * gain).toInt().coerceIn(-32768, 32767)
+
+                    val sample =
+                        ((hi shl 8) or lo).toShort().toInt()
+                    val scaled =
+                        (sample * gain).toInt().coerceIn(-32768, 32767)
+
                     out.write(scaled and 0xff)
                     out.write((scaled shr 8) and 0xff)
                 }
             }
+
             out.flush()
         }
     }
 
     private fun wavHeader(dataSize: Int, sampleRate: Int): ByteArray {
         val header = ByteArray(44)
+
         fun putStr(offset: Int, value: String) {
-            value.forEachIndexed { i, c -> header[offset + i] = c.code.toByte() }
+            value.forEachIndexed { i, c ->
+                header[offset + i] = c.code.toByte()
+            }
         }
+
         fun putInt(offset: Int, value: Int) {
-            repeat(4) { i -> header[offset + i] = (value shr (8 * i)).toByte() }
+            repeat(4) { i ->
+                header[offset + i] = (value shr (8 * i)).toByte()
+            }
         }
+
         fun putShort(offset: Int, value: Int) {
             header[offset] = value.toByte()
             header[offset + 1] = (value shr 8).toByte()
@@ -329,44 +409,14 @@ object AudioImportProcessor {
         putShort(34, 16)
         putStr(36, "data")
         putInt(40, dataSize)
+
         return header
     }
 
-    private class StreamingResampler(
-        val inputRate: Int,
-        outputRate: Int,
-        private val sink: (Float) -> Unit
-    ) {
-        private val step = inputRate.toDouble() / outputRate.toDouble()
-        private var inputIndex = 0L
-        private var nextSourcePosition = 0.0
-        private var previous = 0f
-        private var hasPrevious = false
-
-        fun accept(sample: Float) {
-            if (!hasPrevious) {
-                previous = sample
-                hasPrevious = true
-                if (nextSourcePosition == 0.0) {
-                    sink(sample)
-                    nextSourcePosition += step
-                }
-                return
-            }
-
-            inputIndex++
-            val leftIndex = inputIndex - 1L
-            while (nextSourcePosition <= inputIndex.toDouble()) {
-                val fraction = (nextSourcePosition - leftIndex.toDouble())
-                    .coerceIn(0.0, 1.0)
-                    .toFloat()
-                sink(previous + (sample - previous) * fraction)
-                nextSourcePosition += step
-            }
-            previous = sample
-        }
-    }
-
     private fun MediaFormat.getIntegerOrNull(key: String): Int? =
-        if (containsKey(key)) runCatching { getInteger(key) }.getOrNull() else null
+        if (containsKey(key)) {
+            runCatching { getInteger(key) }.getOrNull()
+        } else {
+            null
+        }
 }

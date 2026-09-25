@@ -9,10 +9,8 @@ import kotlin.math.sqrt
 
 object TranscriberClient {
     data class Result(val text: String?, val error: String?)
-    internal data class ScoredResult(val text: String?, val error: String?, val averageLogProbability: Double?)
     private val client = OkHttpClient()
-    private const val MULTILINGUAL_PROMPT = "The speaker may use Egyptian Arabic and English. Transcribe verbatim without translation. English speech must remain English; Arabic speech must remain Arabic. Preserve every code-switch exactly as spoken."
-    private const val STRICT_PROMPT = "Verbatim transcription only. Never translate. Preserve every spoken word in its original language and script."
+    private const val MULTILINGUAL_PROMPT = "العربية English Deutsch. Preserve code-switching. Transcribe every spoken word in its original language and script."
 
     fun parseResponse(json: String): Result = try {
         val obj = JSONObject(json)
@@ -26,7 +24,7 @@ object TranscriberClient {
     fun transcribe(wavData: ByteArray, apiKey: String, callback: (Result) -> Unit) {
         transcribeOnce(wavData, apiKey, null) { baseline ->
             val text = baseline.text?.trim().orEmpty()
-            if (text.isBlank() || !containsArabic(text) || containsLatin(text)) {
+            if (text.isBlank() || wavData.size > 320_044 || !containsArabic(text) || containsLatin(text)) {
                 callback(baseline); return@transcribeOnce
             }
             transcribeOnce(wavData, apiKey, MULTILINGUAL_PROMPT) { prompted ->
@@ -34,16 +32,6 @@ object TranscriberClient {
                 if (isArabicLatinMix(promptedText)) {
                     callback(Result(promptedText, null)); return@transcribeOnce
                 }
-                // Whisper can occasionally translate strongly accented English into
-                // Arabic even on the transcription endpoint. Compare forced English
-                // and Arabic decodes using Whisper's own token log probabilities;
-                // this corrects the language decision without guessing from the text.
-                transcribeScored(wavData, apiKey, "en") { english ->
-                    transcribeScored(wavData, apiKey, "ar") { arabic ->
-                        val selected = chooseHigherConfidence(english, arabic)
-                        if (selected?.text?.isNotBlank() == true) {
-                            callback(Result(selected.text.trim(), null)); return@transcribeScored
-                        }
                 val chunks = splitOnSilence(wavData)
                 transcribeChunks(chunks, apiKey, 0, mutableListOf()) { parts ->
                     val combined = parts.filter(::isMeaningfulChunk).joinToString(" ").trim()
@@ -59,48 +47,8 @@ object TranscriberClient {
                         }
                     }
                 }
-                    }
-                }
             }
         }
-    }
-
-    internal fun parseScoredResponse(json: String): ScoredResult = try {
-        val obj = JSONObject(json)
-        if (obj.has("error")) {
-            ScoredResult(null, obj.getJSONObject("error").getString("message"), null)
-        } else {
-            val segments = obj.optJSONArray("segments")
-            val scores = mutableListOf<Double>()
-            if (segments != null) for (i in 0 until segments.length()) {
-                val segment = segments.optJSONObject(i)
-                if (segment?.has("avg_logprob") == true) scores += segment.getDouble("avg_logprob")
-            }
-            ScoredResult(obj.optString("text").takeIf { it.isNotBlank() }, null, scores.average().takeUnless { it.isNaN() })
-        }
-    } catch (e: Exception) { ScoredResult(null, e.message ?: "Parse error", null) }
-
-    internal fun chooseHigherConfidence(first: ScoredResult, second: ScoredResult): ScoredResult? {
-        if (first.text.isNullOrBlank() || second.text.isNullOrBlank()) return null
-        val firstScore = first.averageLogProbability ?: return null
-        val secondScore = second.averageLogProbability ?: return null
-        return if (firstScore >= secondScore) first else second
-    }
-
-    private fun transcribeScored(wavData: ByteArray, apiKey: String, language: String, callback: (ScoredResult) -> Unit) {
-        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-            .addFormDataPart("model", "whisper-large-v3")
-            .addFormDataPart("response_format", "verbose_json")
-            .addFormDataPart("temperature", "0")
-            .addFormDataPart("language", language)
-            .addFormDataPart("prompt", STRICT_PROMPT)
-            .addFormDataPart("file", "audio.wav", wavData.toRequestBody("audio/wav".toMediaType())).build()
-        val request = Request.Builder().url("https://api.groq.com/openai/v1/audio/transcriptions")
-            .header("Authorization", "Bearer $apiKey").post(body).build()
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) = callback(ScoredResult(null, e.message, null))
-            override fun onResponse(call: Call, response: Response) = callback(parseScoredResponse(response.body?.string() ?: ""))
-        })
     }
 
     private fun transcribeOnce(wavData: ByteArray, apiKey: String, prompt: String?, callback: (Result) -> Unit) {

@@ -47,7 +47,8 @@ object AudioImportProcessor {
         val durationMs: Long,
         val sourceSampleRate: Int,
         val sourceChannels: Int,
-        val appliedGain: Float
+        val appliedGain: Float,
+        val sourceCopy: File
     ) {
         val summary: String
             get() = "${sourceSampleRate / 1000.0} kHz / ${sourceChannels}ch → 16 kHz mono"
@@ -312,17 +313,21 @@ object AudioImportProcessor {
                 durationMs = durationMs,
                 sourceSampleRate = declaredRate,
                 sourceChannels = declaredChannels,
-                appliedGain = gain
+                appliedGain = gain,
+                sourceCopy = sourceCopy
             )
         } finally {
             runCatching { decoder?.stop() }
             runCatching { decoder?.release() }
             runCatching { extractor.release() }
             rawPcm.delete()
-            sourceCopy.delete()
 
+            // On success ownership of sourceCopy is transferred to the caller
+            // so it can be durably preserved beside the canonical ASR WAV.
+            // On failure, never leak the temporary copy.
             if (!finalWav.exists() || finalWav.length() <= 44L) {
                 finalWav.delete()
+                sourceCopy.delete()
             }
         }
     }

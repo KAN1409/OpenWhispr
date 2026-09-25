@@ -44,7 +44,7 @@ class LocalTranscriber private constructor(
             try {
                 stream.acceptWaveform(samples, sampleRate)
                 active.decode(stream)
-                active.getResult(stream).text.trim()
+                active.getResult(stream).text
             } finally {
                 stream.release()
             }
@@ -115,6 +115,13 @@ class LocalTranscriber private constructor(
                 snapshot.forEach { it.releaseNativeForPressureLocked() }
             }
         }
+
+        /**
+         * Four ORT worker threads is a better ceiling for modern big.LITTLE
+         * phones than the old hard-coded 2 while avoiding oversubscription.
+         */
+        private fun recommendedThreadCount(): Int =
+            Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
 
         /** Find available model dirs under the app's files/models/ dir. */
         fun availableModels(ctx: Context): List<String> {
@@ -215,7 +222,7 @@ class LocalTranscriber private constructor(
                             cachedDecoder = findModelFile(dir, "cached_decode") ?: return null,
                         ),
                         tokens = tokens,
-                        numThreads = 2,
+                        numThreads = recommendedThreadCount(),
                     )
                 )
             }
@@ -235,7 +242,7 @@ class LocalTranscriber private constructor(
                             task = "transcribe",
                         ),
                         tokens = tokens,
-                        numThreads = 2,
+                        numThreads = recommendedThreadCount(),
                         modelType = "whisper",
                     )
                 )
@@ -254,7 +261,7 @@ class LocalTranscriber private constructor(
                             joiner = joiner,
                         ),
                         tokens = tokens,
-                        numThreads = 2,
+                        numThreads = recommendedThreadCount(),
                         modelType = "nemo_transducer",
                     )
                 )
@@ -267,7 +274,7 @@ class LocalTranscriber private constructor(
                     modelConfig = OfflineModelConfig(
                         nemo = OfflineNemoEncDecCtcModelConfig(model = ctcModel),
                         tokens = tokens,
-                        numThreads = 2,
+                        numThreads = recommendedThreadCount(),
                     )
                 )
             }

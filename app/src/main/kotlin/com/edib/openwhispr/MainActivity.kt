@@ -459,9 +459,18 @@ class MainActivity : AppCompatActivity() {
                         views.subtitle.text = "Extracting..."
                     }
                     is DownloadState.Done -> {
+                        // Download completion and native model activation are deliberately
+                        // separate operations. Loading sherpa-onnx immediately from this
+                        // callback can terminate the whole app process if a device/native
+                        // model combination faults below the JVM (SIGSEGV/SIGABRT), which
+                        // Kotlin try/catch cannot intercept. Keep the freshly downloaded
+                        // model installed but inactive; the user can explicitly select it
+                        // after the UI has returned to a stable state.
                         views.progress.visibility = View.GONE
-                        selectModel(model.archive)
-                        toast("${model.name} ready!")
+                        views.dlBtn.isEnabled = true
+                        refreshAllCards()
+                        refresh()
+                        toast("${model.name} downloaded. Tap it to activate.")
                     }
                     is DownloadState.Error -> {
                         views.progress.visibility = View.GONE

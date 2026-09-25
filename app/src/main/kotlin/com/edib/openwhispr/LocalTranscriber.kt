@@ -91,6 +91,11 @@ class LocalTranscriber private constructor(private val recognizer: OfflineRecogn
                         whisper = OfflineWhisperModelConfig(
                             encoder = whisperEncoder,
                             decoder = whisperDecoder,
+                            // Kotlin defaults this field to "en". Blank means
+                            // auto-detect for multilingual Whisper models.
+                            language = if (dir.name.endsWith(".en")) "en" else "",
+                            // Never translate speech to English.
+                            task = "transcribe",
                         ),
                         tokens = tokens,
                         numThreads = 2,

@@ -46,21 +46,69 @@ object ModelDownloader {
         File(ctx.filesDir, "models/${model.archive}")
 
     fun isInstalled(ctx: Context, model: Model) =
-        modelDir(ctx, model).exists()
+        LocalTranscriber.isModelInstallComplete(ctx, model.archive)
 
     /** Download and extract model. Callbacks fire on background thread. */
     fun download(ctx: Context, model: Model, onState: (DownloadState) -> Unit) {
         val url = "$BASE_URL/${model.archive}.tar.bz2"
         val tmpFile = File(ctx.cacheDir, "${model.archive}.tar.bz2")
         val outDir = File(ctx.filesDir, "models")
+        val stagingRoot = File(outDir, ".installing-${model.archive}")
+        val targetDir = modelDir(ctx, model)
 
         Thread {
             try {
                 downloadFile(url, tmpFile, onState)
                 onState(DownloadState.Extracting)
-                extractTarBz2(tmpFile, outDir)
+
+                // Extract into a private staging directory first. A crash or
+                // interrupted extraction can no longer leave a partial model
+                // looking "installed" to the app.
+                stagingRoot.deleteRecursively()
+                stagingRoot.mkdirs()
+                extractTarBz2(tmpFile, stagingRoot)
+
+                val extractedDir = File(stagingRoot, model.archive)
+                require(extractedDir.isDirectory) {
+                    "Downloaded archive did not contain ${model.archive}"
+                }
+
+                // Validate the actual sherpa package before replacing any
+                // existing installation.
+                val validationContextDir = File(ctx.filesDir, "models")
+                val issue = when {
+                    model.archive.contains("whisper", ignoreCase = true) -> {
+                        val names = extractedDir.listFiles()?.map { it.name }.orEmpty()
+                        when {
+                            names.none { it == "tokens.txt" || it.endsWith("-tokens.txt") } -> "token file missing"
+                            names.none { it.contains("-encoder.") || it.startsWith("encoder.") } -> "Whisper encoder missing"
+                            names.none { it.contains("-decoder.") || it.startsWith("decoder.") } -> "Whisper decoder missing"
+                            else -> null
+                        }
+                    }
+                    model.archive.contains("moonshine", ignoreCase = true) -> {
+                        val names = extractedDir.listFiles()?.map { it.name }.orEmpty()
+                        when {
+                            "preprocess.onnx" !in names -> "Moonshine preprocessor missing"
+                            names.none { it.startsWith("encode") && it.endsWith(".onnx") } -> "Moonshine encoder missing"
+                            names.none { it.startsWith("uncached_decode") && it.endsWith(".onnx") } -> "Moonshine uncached decoder missing"
+                            names.none { it.startsWith("cached_decode") && it.endsWith(".onnx") } -> "Moonshine cached decoder missing"
+                            "tokens.txt" !in names -> "Moonshine tokens missing"
+                            else -> null
+                        }
+                    }
+                    else -> null
+                }
+                require(issue == null) { "Downloaded model incomplete: $issue" }
+
+                if (targetDir.exists()) targetDir.deleteRecursively()
+                require(extractedDir.renameTo(targetDir)) {
+                    "Unable to commit downloaded model"
+                }
+                stagingRoot.deleteRecursively()
                 onState(DownloadState.Done)
             } catch (e: Exception) {
+                stagingRoot.deleteRecursively()
                 onState(DownloadState.Error(e.message ?: "Unknown error"))
             } finally {
                 tmpFile.delete()

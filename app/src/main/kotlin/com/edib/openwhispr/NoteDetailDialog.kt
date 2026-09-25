@@ -341,6 +341,7 @@ class NoteDetailDialog(
 
         transcriptContainer.addView(actionRow)
         root.addView(transcriptContainer)
+        root.addView(BenchmarkUi.noteSection(context, initialNoteId))
 
         val scroll = ScrollView(context).apply {
             isFillViewport = true

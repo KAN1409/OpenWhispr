@@ -240,7 +240,10 @@ class WhisperAccessibilityService : AccessibilityService() {
             if (modelName.isBlank()) {
                 localTranscriber = null
             } else {
-                localTranscriber = LocalTranscriber.create(this, modelName)
+                // Reuse the process-wide cached recognizer. Loading a second
+                // Whisper session (one here, one for note transcription) doubles
+                // native memory usage, which can OOM-kill the process.
+                localTranscriber = LocalTranscriber.withShared(this, modelName) { it }
             }
             if (localTranscriber != null) {
                 Log.i(TAG, "Local transcription ready")
@@ -871,8 +874,20 @@ class WhisperAccessibilityService : AccessibilityService() {
         val useLocal = prefs().getBoolean("use_local", true)
         val local = localTranscriber
 
-        if (useLocal && local != null) {
-            transcribeLocal(pcm, local)
+        if (useLocal) {
+            // LOCAL ROUTING CONTRACT: when Local is selected the dictation is
+            // transcribed on device or not at all. Previously an unavailable
+            // local model silently sent the audio to the cloud API; a user who
+            // chose Local must not have their speech leave the device.
+            if (local != null) {
+                transcribeLocal(pcm, local)
+            } else {
+                Log.e(TAG, "Local mode selected but no local model is loaded; not using cloud")
+                handler.post {
+                    toast(NoteTranscriber.LOCAL_FAILED_MESSAGE)
+                    goIdle()
+                }
+            }
         } else {
             transcribeApi(pcm)
         }
@@ -890,11 +905,23 @@ class WhisperAccessibilityService : AccessibilityService() {
                 }
 
                 val t0 = System.currentTimeMillis()
-                val text = transcriber.transcribe(samples, SAMPLE_RATE)
+                // Serialise on the shared model so background note
+                // transcription and live dictation cannot run concurrently
+                // against the same recognizer.
+                val text = LocalTranscriber.withShared(this, transcriber.modelName) {
+                    it.transcribe(samples, SAMPLE_RATE)
+                }
                 val ms = System.currentTimeMillis() - t0
                 Log.i(TAG, "Local transcription: ${ms}ms, ${samples.size / SAMPLE_RATE}s audio")
 
+                if (text == null) {
+                    handler.post { toast("Local error: model unavailable"); goIdle() }
+                    return@thread
+                }
                 handleTranscriptionResult(text)
+            } catch (e: OutOfMemoryError) {
+                Log.e(TAG, "Out of memory during local transcription", e)
+                handler.post { toast("Local error: out of memory"); goIdle() }
             } catch (e: Exception) {
                 Log.e(TAG, "Local transcription failed", e)
                 handler.post {

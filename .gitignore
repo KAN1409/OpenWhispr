@@ -5,3 +5,10 @@ local.properties
 .env
 *.apk
 .DS_Store
+
+# Local build probe artifacts (whisper.cpp experiment, kept outside the repo)
+native/
+ui-audit/
+fixtures/
+tools/
+apk/

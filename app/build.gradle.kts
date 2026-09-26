@@ -24,8 +24,12 @@ android {
         applicationId = "com.edib.openwhispr"
         minSdk = 30
         targetSdk = 35
-        versionCode = 25
-        versionName = "3.10.0"
+        // v3.15.1: Local transcription no longer falls back to the cloud
+        // provider; model activation requires an explicit action; interface
+        // glyphs replaced with vector icons; light-mode polish.
+        // Transcription behaviour itself is unchanged from v3.14.0.
+        versionCode = 31
+        versionName = "3.15.1"
 
         ndk { abiFilters += "arm64-v8a" }
     }

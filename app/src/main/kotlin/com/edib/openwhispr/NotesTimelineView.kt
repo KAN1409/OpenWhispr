@@ -1,6 +1,7 @@
 package com.edib.openwhispr
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Typeface
@@ -30,11 +31,13 @@ class NotesTimelineView(
     private val recorder = InAppNoteRecorder(context)
 
     private val container: LinearLayout
-    private val notesListLayout: LinearLayout
+    private val notesRecycler: androidx.recyclerview.widget.RecyclerView
+    private val notesAdapter: NotesAdapter
     private val searchBarLayout: LinearLayout
     private val searchEditText: EditText
     private val emptyView: TextView
-    private val recordFab: FloatingActionButton
+    private val recordBar: LinearLayout
+    private val recordFab: MaterialButton
 
     // Minimal In-App Recording Screen/Overlay
     private val recordingOverlay: LinearLayout
@@ -50,65 +53,51 @@ class NotesTimelineView(
     private val d = context.resources.displayMetrics.density
     private fun dp(v: Int) = (v * d).toInt()
 
-    init {
-        setBackgroundColor(OpenWisprUi.BACKGROUND)
+    private companion object {
+        /** Bottom content inset that keeps the last card clear of the record bar. */
+        const val RECORD_BAR_INSET = 76
+    }
 
-        val scrollView = ScrollView(context).apply {
-            isFillViewport = true
-            setBackgroundColor(OpenWisprUi.BACKGROUND)
-        }
+    init {
+        setBackgroundColor(OpenWisprUi.bg(context))
 
         container = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(100))
+            setPadding(dp(OpenWisprUi.SPACE_LG), dp(OpenWisprUi.SPACE_MD), dp(OpenWisprUi.SPACE_LG), 0)
         }
 
-        // ================= TOP BAR: OpenWispr | Search | Settings =================
+        // ================= TOP BAR: title + Search + Settings =================
+        // The system bar already shows the app name, and the screen below is
+        // the notes list, so the app name is not repeated in content space.
         val topBar = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(10)
+                bottomMargin = dp(OpenWisprUi.SPACE_SM)
             }
             layoutParams = lp
         }
 
         val brandTitle = TextView(context).apply {
-            text = "OpenWispr"
-            textSize = 20f
+            text = "Notes"
+            textSize = 24f
             setTypeface(typeface, Typeface.BOLD)
-            setTextColor(OpenWisprUi.TEXT)
+            setTextColor(OpenWisprUi.primaryText(context))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         topBar.addView(brandTitle)
 
-        val searchBtn = OpenWisprUi.iconButton(context, "⌕", "Search notes").apply {
-            setOnClickListener { toggleSearch() }
+        val searchBtn = OpenWisprUi.iconImageButton(context, R.drawable.ic_search, "Search notes") {
+            toggleSearch()
         }
         topBar.addView(searchBtn)
 
-        val settingsBtn = OpenWisprUi.iconButton(context, "⚙", "Settings").apply {
-            setOnClickListener { onOpenSettings() }
+        val settingsBtn = OpenWisprUi.iconImageButton(context, R.drawable.ic_settings, "Settings") {
+            onOpenSettings()
         }
         topBar.addView(settingsBtn)
 
         container.addView(topBar)
-
-        // ================= SECTION TITLE: Notes =================
-        val notesTitle = TextView(context).apply {
-            text = "Notes"
-            textSize = 26f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(OpenWisprUi.TEXT)
-            setPadding(0, 0, 0, dp(2))
-        }
-        container.addView(notesTitle)
-        container.addView(TextView(context).apply {
-            text = "Your voice, captured."
-            textSize = 14f
-            setTextColor(OpenWisprUi.TEXT_SECONDARY)
-            setPadding(0, 0, 0, dp(12))
-        })
 
         // ================= SEARCH BAR (Expandable) =================
         searchBarLayout = LinearLayout(context).apply {
@@ -125,8 +114,8 @@ class NotesTimelineView(
 
         searchEditText = EditText(context).apply {
             hint = "Search notes…"
-            setHintTextColor(0xFF757575.toInt())
-            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(OpenWisprUi.mutedText(context))
+            setTextColor(OpenWisprUi.primaryText(context))
             textSize = 15f
             background = null
             textDirection = View.TEXT_DIRECTION_FIRST_STRONG
@@ -161,42 +150,114 @@ class NotesTimelineView(
         searchBarLayout.addView(clearSearchBtn)
         container.addView(searchBarLayout)
 
-        // ================= NOTES LIST CONTAINER =================
-        notesListLayout = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        container.addView(notesListLayout)
-
         emptyView = TextView(context).apply {
-            text = "No voice notes yet\n\nYour voice, captured.\nTap the microphone to record your first note."
+            text = "No voice notes yet\n\nRecord your first note and it will be transcribed here."
             textSize = 16f
-            setTextColor(OpenWisprUi.TEXT_SECONDARY)
+            setTextColor(OpenWisprUi.secondaryText(context))
             gravity = Gravity.CENTER
-            setPadding(dp(24), dp(48), dp(24), dp(48))
+            setLineSpacing(0f, 1.3f)
+            // Centred in the available space, not pinned under the list. A
+            // weighted child with a small top padding sits high in the column;
+            // this offset moves the message into the visual middle.
+            setPadding(dp(OpenWisprUi.SPACE_XL), dp(48), dp(OpenWisprUi.SPACE_XL), dp(48))
             visibility = View.GONE
         }
-        container.addView(emptyView)
 
-        scrollView.addView(container)
-        addView(scrollView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-
-        // ================= BOTTOM MICROPHONE FAB =================
-        recordFab = FloatingActionButton(context).apply {
-            setImageResource(R.drawable.ic_mic)
-            backgroundTintList = ColorStateList.valueOf(0xFFEF4444.toInt())
-            imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
-            contentDescription = "Record voice note"
-            val lp = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
-                gravity = Gravity.BOTTOM or Gravity.END
-                marginEnd = dp(24)
-                bottomMargin = dp(24)
-            }
-            layoutParams = lp
-            setOnClickListener {
-                startRecordingFlow()
-            }
+        // The header is fixed and only the list scrolls. A RecyclerView nested
+        // inside a ScrollView would inflate every row anyway, so the root is a
+        // vertical column: fixed header, then a weighted scrolling list.
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = OpenWisprUi.surface(context, 0, OpenWisprUi.bg(context))
         }
-        addView(recordFab)
+        addView(column, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        column.addView(container, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        notesAdapter = NotesAdapter(
+            onOpen = { note -> NoteDetailDialog(context, note.id) { refreshNotes() }.show() },
+            onPinToggle = { repo.togglePinned(it.id); refreshNotes() },
+            onRetranscribe = { NoteTranscriber.transcribeNoteAsync(context, it.id); refreshNotes() },
+            onCopy = {
+                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                cm.setPrimaryClip(
+                    android.content.ClipData.newPlainText("Transcript", it.displayTranscript.orEmpty())
+                )
+                android.widget.Toast.makeText(context, "Transcript copied", android.widget.Toast.LENGTH_SHORT).show()
+            },
+            onDelete = { note ->
+                AlertDialog.Builder(context)
+                    .setTitle("Delete note?")
+                    .setMessage("This removes the recording and its transcript.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Delete") { _, _ ->
+                        repo.deleteNote(note.id)
+                        refreshNotes()
+                    }
+                    .show()
+            },
+        )
+
+        notesRecycler = androidx.recyclerview.widget.RecyclerView(context).apply {
+            layoutManager = androidx.recyclerview.widget.LinearLayoutManager(context)
+            adapter = notesAdapter
+            clipToPadding = false
+            // Bottom inset clears the record bar so the last card can always
+            // scroll fully into view instead of being clipped by it.
+            setPadding(
+                dp(OpenWisprUi.SPACE_LG), 0, dp(OpenWisprUi.SPACE_LG),
+                dp(OpenWisprUi.SPACE_LG) + RECORD_BAR_INSET
+            )
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+        }
+        column.addView(notesRecycler, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f))
+        column.addView(emptyView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f))
+
+        // ================= BOTTOM RECORD BAR =================
+        // Record is the app's primary action, so it gets a persistent,
+        // always-visible full-width target instead of a corner FAB that
+        // overlapped the last note and sat on top of the gesture bar.
+        // One control only: an earlier revision showed both a FAB and a pill,
+        // which read as two competing primary actions.
+        recordBar = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(OpenWisprUi.SPACE_LG), dp(OpenWisprUi.SPACE_MD),
+                        dp(OpenWisprUi.SPACE_LG), dp(OpenWisprUi.SPACE_MD))
+            setBackgroundColor(OpenWisprUi.bg(context))
+        }
+        // Hairline so the bar reads as a separate surface rather than a gap.
+        recordBar.addView(View(context).apply {
+            setBackgroundColor(0x1FFFFFFF)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1)
+            )
+        })
+        // The word names the action; a bare mic glyph was too ambiguous on its
+        // own, and a decorative bullet character was worse. A full-bleed red
+        // slab dominated every screenshot, so the button is inset and rounded.
+        recordFab = MaterialButton(context).apply {
+            text = "Record voice note"
+            textSize = 15f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            backgroundTintList = ColorStateList.valueOf(OpenWisprUi.RECORD)
+            cornerRadius = dp(14)
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)
+            )
+            layoutParams = lp
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Record voice note"
+            setOnClickListener { startRecordingFlow() }
+        }
+        recordBar.addView(recordFab)
+        addView(recordBar, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.BOTTOM
+        })
 
         // ================= MINIMAL RECORDING UI =================
         // Layout:
@@ -269,6 +330,9 @@ class NotesTimelineView(
             text = "Cancel"
             textSize = 14f
             setTextColor(0xFF888888.toInt())
+            // Quiet, non-destructive weighting, but still a full-size target.
+            minHeight = dp(48)
+            minWidth = dp(96)
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp(16)
             }
@@ -361,8 +425,6 @@ class NotesTimelineView(
     }
 
     fun refreshNotes() {
-        notesListLayout.removeAllViews()
-
         val allNotes = if (currentSearchQuery.isEmpty()) {
             repo.getAllNotes()
         } else {
@@ -371,165 +433,23 @@ class NotesTimelineView(
 
         if (allNotes.isEmpty()) {
             emptyView.visibility = View.VISIBLE
-            if (currentSearchQuery.isNotEmpty()) {
-                emptyView.text = "No results\n\nTry another search."
+            // The list and the empty view are both weighted children; leaving
+            // the list visible splits the space so the message lands at the
+            // bottom instead of in the middle.
+            notesRecycler.visibility = View.GONE
+            emptyView.text = if (currentSearchQuery.isNotEmpty()) {
+                "No results\n\nTry another search."
             } else {
-                emptyView.text = "No voice notes yet\n\nYour voice, captured.\nTap the microphone to record your first note."
+                "No voice notes yet\n\nRecord your first note and it will be transcribed here."
             }
+            notesAdapter.submitList(emptyList())
             return
-        } else {
-            emptyView.visibility = View.GONE
         }
-
-        // Group notes:
-        // 1. PINNED (if any pinned notes exist)
-        // 2. TODAY (if any today notes exist)
-        // 3. YESTERDAY (if any yesterday notes exist)
-        // 4. OLDER DATES
-        val pinned = allNotes.filter { it.isPinned }
-        val unpinned = allNotes.filter { !it.isPinned }
-
-        if (pinned.isNotEmpty()) {
-            notesListLayout.addView(buildSectionHeader("PINNED"))
-            pinned.forEach { notesListLayout.addView(buildNoteCard(it)) }
-        }
-
-        if (unpinned.isNotEmpty()) {
-            val groupedByDay = unpinned.groupBy { Note.formatDateHeader(it.createdAt) }
-            groupedByDay.forEach { (dayLabel, notes) ->
-                notesListLayout.addView(buildSectionHeader(dayLabel.uppercase()))
-                notes.forEach { notesListLayout.addView(buildNoteCard(it)) }
-            }
-        }
+        emptyView.visibility = View.GONE
+        notesRecycler.visibility = View.VISIBLE
+        // Diffed update: only changed rows rebind, instead of rebuilding every
+        // note view on each refresh (and on each keystroke while searching).
+        notesAdapter.submitList(NotesAdapter.buildRows(allNotes, currentSearchQuery))
     }
 
-    private fun buildSectionHeader(title: String) = TextView(context).apply {
-        text = title
-        textSize = 12f
-        setTypeface(typeface, Typeface.BOLD)
-        setTextColor(0xFF888888.toInt())
-        setPadding(dp(4), dp(16), dp(4), dp(8))
-    }
-
-    private fun buildNoteCard(note: Note): View {
-        val card = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            background = OpenWisprUi.surface(context)
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(10)
-            }
-            layoutParams = lp
-            isClickable = true
-            isFocusable = true
-            setOnClickListener {
-                NoteDetailDialog(context, note.id) { refreshNotes() }.show()
-            }
-        }
-
-        // Header: Title and Pin indicator
-        val titleRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        val titleTv = TextView(context).apply {
-            text = note.title
-            textSize = 15f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(OpenWisprUi.TEXT)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        titleRow.addView(titleTv)
-
-        val more = OpenWisprUi.iconButton(context, if (note.isPinned) "•" else "⋮", if (note.isPinned) "Pinned note options" else "Note options").apply {
-            textSize = 22f
-            setOnClickListener { anchor ->
-                PopupMenu(context, anchor).apply {
-                    menu.add(if (note.isPinned) "Unpin note" else "Pin note")
-                    menu.add("Retranscribe")
-                    setOnMenuItemClickListener { item ->
-                        when (item.title.toString()) {
-                            "Pin note", "Unpin note" -> repo.togglePinned(note.id)
-                            "Retranscribe" -> NoteTranscriber.transcribeNoteAsync(context, note.id)
-                        }
-                        refreshNotes()
-                        true
-                    }
-                    show()
-                }
-            }
-        }
-        titleRow.addView(more, LinearLayout.LayoutParams(dp(48), dp(48)))
-        card.addView(titleRow)
-
-        // Body content based on transcription state: PENDING, FAILED, COMPLETE
-        when (note.transcriptionState) {
-            Note.State.PENDING -> {
-                val pendingTv = TextView(context).apply {
-                    text = "Transcribing…"
-                    textSize = 14f
-                    setTextColor(0xFF9E9E9E.toInt())
-                    setPadding(0, dp(4), 0, dp(6))
-                }
-                card.addView(pendingTv)
-            }
-            Note.State.FAILED -> {
-                val failedTitle = TextView(context).apply {
-                    text = "Couldn't transcribe"
-                    textSize = 14f
-                    setTypeface(typeface, Typeface.BOLD)
-                    setTextColor(0xFFEF4444.toInt())
-                    setPadding(0, dp(4), 0, dp(2))
-                }
-                card.addView(failedTitle)
-
-                val failedSub = TextView(context).apply {
-                    text = "Your recording is safe."
-                    textSize = 13f
-                    setTextColor(0xFF9E9E9E.toInt())
-                    setPadding(0, 0, 0, dp(6))
-                }
-                card.addView(failedSub)
-
-                val retryBtn = TextView(context).apply {
-                    text = "Retry transcription"
-                    textSize = 13f
-                    setTypeface(typeface, Typeface.BOLD)
-                    setTextColor(0xFF3B82F6.toInt())
-                    setPadding(0, 0, 0, dp(6))
-                    isClickable = true
-                    isFocusable = true
-                    setOnClickListener {
-                        NoteTranscriber.transcribeNoteAsync(context, note.id)
-                        refreshNotes()
-                    }
-                }
-                card.addView(retryBtn)
-            }
-            Note.State.COMPLETE -> {
-                val transcriptPreview = TextView(context).apply {
-                    text = note.displayTranscript ?: ""
-                    textSize = 14f
-                    maxLines = 2
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    setTextColor(0xFFE0E0E0.toInt())
-                    textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-                    textAlignment = View.TEXT_ALIGNMENT_VIEW_START
-                    setPadding(0, dp(4), 0, dp(6))
-                }
-                card.addView(transcriptPreview)
-            }
-        }
-
-        // Compact playback metadata. Opening the card exposes the full player.
-        val footer = TextView(context).apply {
-            text = "▶  ${Note.formatDuration(note.audioDurationMs)}                              ${Note.formatFooterTime(note.createdAt)}"
-            textSize = 12f
-            setTextColor(0xFF757575.toInt())
-        }
-        card.addView(footer)
-
-        return card
-    }
 }

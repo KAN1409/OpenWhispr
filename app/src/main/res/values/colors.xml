@@ -11,4 +11,9 @@
     <color name="tertiary">#7C5800</color>
     <color name="tertiary_container">#FFDEA6</color>
     <color name="on_tertiary_container">#271900</color>
+
+    <!-- The surface the app actually paints behind its content. Used for the
+         system bars so they match the app background exactly instead of
+         inheriting a different M3 colour that left a visible seam. -->
+    <color name="app_surface">#F6F7F9</color>
 </resources>

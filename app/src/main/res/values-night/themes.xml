@@ -12,9 +12,10 @@
         <item name="colorTertiaryContainer">@color/tertiary_container</item>
         <item name="colorOnTertiaryContainer">@color/on_tertiary_container</item>
 
-        <!-- Status / Navigation Bars -->
+        <!-- Status / Navigation Bars: light-on-dark in the night theme. -->
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">?android:attr/colorBackground</item>
-        <item name="android:navigationBarColor">?android:attr/colorBackground</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:statusBarColor">@color/app_surface</item>
+        <item name="android:navigationBarColor">@color/app_surface</item>
     </style>
 </resources>

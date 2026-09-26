@@ -57,6 +57,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settingsScrollView: ScrollView
 
     private val modelRows = mutableMapOf<String, ModelRowViews>()
+    private lateinit var engineSummary: TextView
     private var batteryWarningShown = false
     private var setupExpanded = false
 
@@ -64,7 +65,7 @@ class MainActivity : AppCompatActivity() {
         val radio: MaterialRadioButton,
         val progress: LinearProgressIndicator,
         val subtitle: TextView,
-        val dlBtn: MaterialButton
+        val actionBtn: MaterialButton
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -85,7 +86,7 @@ class MainActivity : AppCompatActivity() {
         Thread { NoteTranscriber.resumePendingNotes(applicationContext) }.start()
 
         val outer = vertical(0, 0).apply {
-            setBackgroundColor(OpenWisprUi.BACKGROUND)
+            setBackgroundColor(OpenWisprUi.bg(this@MainActivity))
         }
 
         val backToNotesBar = LinearLayout(this).apply {
@@ -200,6 +201,16 @@ class MainActivity : AppCompatActivity() {
 
         dictationContainer.addView(sectionHeader("TRANSCRIPTION"))
 
+        // One plain line stating the engine that will actually be used, so the
+        // answer to "am I local or cloud?" does not require reading a switch.
+        engineSummary = TextView(this).apply {
+            textSize = 14f
+            setLineSpacing(0f, 1.25f)
+            setTextColor(OpenWisprUi.secondaryText(this@MainActivity))
+            setPadding(0, 0, 0, dp(12))
+        }
+        dictationContainer.addView(engineSummary)
+
         val isCloud = !prefs().getBoolean("use_local", true)
         val cloudSwitch = MaterialSwitch(this).apply {
             isChecked = isCloud
@@ -305,7 +316,7 @@ class MainActivity : AppCompatActivity() {
         outer.addView(settingsContainer)
 
         settingsScrollView = ScrollView(this).apply {
-            setBackgroundColor(OpenWisprUi.BACKGROUND)
+            setBackgroundColor(OpenWisprUi.bg(this@MainActivity))
             addView(outer)
             visibility = View.GONE
         }
@@ -380,12 +391,21 @@ class MainActivity : AppCompatActivity() {
     private fun buildModelRow(model: Model): View {
         val radio = MaterialRadioButton(this).apply {
             isClickable = false
-            buttonTintList = ColorStateList.valueOf(attrColor(androidx.appcompat.R.attr.colorPrimary))
+            isFocusable = false
+            buttonTintList = ColorStateList.valueOf(OpenWisprUi.ACCENT)
         }
-        val dlBtn = MaterialButton(this, null, com.google.android.material.R.attr.materialIconButtonStyle).apply {
-            text = "↓"
-            textSize = 18f
-            setTextColor(attrColor(androidx.appcompat.R.attr.colorPrimary))
+
+        // The single action for this row. Its label says which of the three
+        // distinct operations it performs: Download, Use model, or nothing at
+        // all when the model is already active.
+        val actionBtn = MaterialButton(this).apply {
+            textSize = 13f
+            isAllCaps = false
+            minWidth = dp(104)
+            minHeight = dp(48)
+            cornerRadius = dp(10)
+            insetTop = 0
+            insetBottom = 0
         }
 
         val progress = LinearProgressIndicator(this).apply {
@@ -396,25 +416,46 @@ class MainActivity : AppCompatActivity() {
         }
 
         val rightContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(dlBtn)
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+            addView(actionBtn)
             addView(radio)
+            (actionBtn.layoutParams as LinearLayout.LayoutParams).apply {
+                gravity = Gravity.END
+            }
         }
 
+        // A casual tap anywhere on the row must NOT change the active model:
+        // an accidental tap previously switched the app off Whisper Large v3.
+        // Only the explicit button activates a downloaded model.
         val row = settingsRow(
-            if (model.recommended) model.name else model.name,
-            "${model.quality} · ${model.sizeMb} MB",
+            model.name,
+            "",                                  // set by refreshCard()
             rightContainer
         ) {
-            onModelAction(model)
+            // A casual tap on the row is intentionally inert: activating a
+            // different model is an explicit choice, not something that should
+            // happen because a finger landed on a card.
         }
+        row.isClickable = false
+        row.isFocusable = false
 
+        actionBtn.setOnClickListener { onModelAction(model) }
+
+        // The quality blurb sits on its own line under the state, so the state
+        // ("Downloaded · Active") is never buried inside a wrapped sentence.
+        val qualityTv = TextView(this).apply {
+            text = model.quality
+            textSize = 12f
+            setTextColor(OpenWisprUi.mutedText(this@MainActivity))
+            setPadding(0, dp(2), 0, 0)
+        }
         val textContainer = row.getChildAt(0) as LinearLayout
         textContainer.addView(progress)
+        textContainer.addView(qualityTv)
 
         modelRows[model.archive] = ModelRowViews(
-            radio, progress, textContainer.findViewWithTag("subtitle"), dlBtn
+            radio, progress, textContainer.findViewWithTag("subtitle"), actionBtn
         )
         refreshCard(model)
 
@@ -424,15 +465,16 @@ class MainActivity : AppCompatActivity() {
     private fun onModelAction(model: Model) {
         val views = modelRows[model.archive] ?: return
 
+        // Reached only from the explicit per-row button, never from a row tap.
         if (ModelDownloader.isInstalled(this, model)) {
             selectModel(model.archive)
             return
         }
 
-        views.dlBtn.isEnabled = false
+        views.actionBtn.isEnabled = false
         views.progress.visibility = View.VISIBLE
         views.progress.isIndeterminate = false
-        views.subtitle.text = "Starting download..."
+        views.subtitle.text = "Downloading · 0%"
 
         ModelDownloader.download(this, model) { state ->
             runOnUiThread {
@@ -454,15 +496,15 @@ class MainActivity : AppCompatActivity() {
                         // model installed but inactive; the user can explicitly select it
                         // after the UI has returned to a stable state.
                         views.progress.visibility = View.GONE
-                        views.dlBtn.isEnabled = true
+                        views.actionBtn.isEnabled = true
                         refreshAllCards()
                         refresh()
-                        toast("${model.name} downloaded. Tap it to activate.")
+                        toast("${model.name} downloaded. Tap Use model to activate it.")
                     }
                     is DownloadState.Error -> {
                         views.progress.visibility = View.GONE
-                        views.subtitle.text = "Error: ${state.message}"
-                        views.dlBtn.isEnabled = true
+                        views.subtitle.text = "Download failed. Error: ${state.message}"
+                        views.actionBtn.isEnabled = true
                     }
                 }
             }
@@ -481,12 +523,44 @@ class MainActivity : AppCompatActivity() {
         val installed = ModelDownloader.isInstalled(this, model)
 
         views.radio.isChecked = active
-        views.radio.visibility = if (installed) View.VISIBLE else View.GONE
-        views.dlBtn.visibility = if (installed) View.GONE else View.VISIBLE
+        views.radio.visibility = if (active) View.VISIBLE else View.GONE
 
         if (views.progress.visibility == View.GONE) {
-            views.subtitle.text = "${model.quality} · ${model.sizeMb} MB"
+            // State is stated in words. The button label states the available
+            // operation, so Download and Activate can never be confused.
+            val stateText = when {
+                active -> "Downloaded · Active · ${model.sizeMb} MB"
+                installed -> "Downloaded · ${model.sizeMb} MB"
+                else -> "Not downloaded · ${model.sizeMb} MB"
+            }
+            views.subtitle.text = stateText
+
+            val btn = views.actionBtn
+            btn.isEnabled = true
+            btn.alpha = 1f
+            when {
+                active -> {
+                    // Already in use: no action to offer.
+                    btn.visibility = View.GONE
+                }
+                installed -> {
+                    btn.visibility = View.VISIBLE
+                    btn.text = "Use model"
+                    styleModelAction(btn)
+                }
+                else -> {
+                    btn.visibility = View.VISIBLE
+                    btn.text = "Download"
+                    styleModelAction(btn)
+                }
+            }
         }
+    }
+
+    private fun styleModelAction(btn: MaterialButton) {
+        btn.setTextColor(OpenWisprUi.ACCENT)
+        // Tinted, not a hard-coded colour, so it follows the theme in light mode.
+        btn.backgroundTintList = ColorStateList.valueOf(0x1F5B8DEF)
     }
 
     private fun refreshAllCards() = MODEL_CATALOG.forEach { refreshCard(it) }
@@ -510,6 +584,19 @@ class MainActivity : AppCompatActivity() {
             "Unrestricted — won't be shut down to save battery"
         else
             "Tap to allow background activity (recommended)"
+
+        // State the active engine in words, and say plainly when local is
+        // selected but unusable, so the mode is never a guess.
+        if (::engineSummary.isInitialized) {
+            val activeName = MODEL_CATALOG.firstOrNull { it.archive == selectedModel }?.name
+                ?: selectedModel.substringAfterLast('/').ifBlank { "local model" }
+            engineSummary.text = when {
+                !useLocal && hasKey -> "Using cloud transcription (Groq). Requires internet."
+                !useLocal -> "Cloud selected, but no API key is set. Transcription will fail."
+                hasModel -> "Using $activeName. Runs on this device, works offline."
+                else -> "Local selected, but no model is installed. Download one below."
+            }
+        }
 
         // --- Setup checklist card ---
         val allOk = audio && acc && unrestricted

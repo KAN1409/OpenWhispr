@@ -52,6 +52,7 @@ class NoteDetailDialog(
     private lateinit var editedBadge: TextView
     private lateinit var viewOriginalBtn: MaterialButton
     private lateinit var editBtn: MaterialButton
+    private lateinit var copyBtn: MaterialButton
     private lateinit var shareBtn: MaterialButton
 
     private var playbackSpeed = 1.0f
@@ -63,12 +64,12 @@ class NoteDetailDialog(
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
-        window?.setBackgroundDrawable(ColorDrawable(OpenWisprUi.BACKGROUND))
+        window?.setBackgroundDrawable(ColorDrawable(OpenWisprUi.bg(context)))
         window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
 
         val root = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(OpenWisprUi.BACKGROUND)
+            setBackgroundColor(OpenWisprUi.bg(context))
             setPadding(dp(16), dp(12), dp(16), dp(32))
         }
 
@@ -82,10 +83,9 @@ class NoteDetailDialog(
             layoutParams = lp
         }
 
-        val backBtn = OpenWisprUi.iconButton(context, "‹", "Back to notes").apply {
-            textSize = 32f
-            setOnClickListener { dismiss() }
-        }
+        val backBtn = OpenWisprUi.iconImageButton(
+            context, R.drawable.ic_arrow_back, "Back to notes"
+        ) { dismiss() }
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             view.setPadding(dp(16) + bars.left, dp(12) + bars.top, dp(16) + bars.right, dp(32) + bars.bottom)
@@ -98,9 +98,9 @@ class NoteDetailDialog(
         }
         topBar.addView(spacer)
 
-        val moreBtn = OpenWisprUi.iconButton(context, "⋮", "More note actions").apply {
-            setOnClickListener { v -> showMoreMenu(v) }
-        }
+        val moreBtn = OpenWisprUi.iconImageButton(
+            context, R.drawable.ic_more_vert, "More note actions"
+        ) { v -> showMoreMenu(v) }
         topBar.addView(moreBtn)
         root.addView(topBar)
 
@@ -108,14 +108,14 @@ class NoteDetailDialog(
         titleText = TextView(context).apply {
             textSize = 22f
             setTypeface(typeface, Typeface.BOLD)
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(OpenWisprUi.primaryText(context))
         }
         root.addView(titleText)
 
         dateText = TextView(context).apply {
             textSize = 14f
-            setTextColor(0xFF888888.toInt())
-            setPadding(0, dp(4), 0, dp(24))
+            setTextColor(OpenWisprUi.mutedText(context))
+            setPadding(0, dp(OpenWisprUi.SPACE_XS), 0, dp(OpenWisprUi.SPACE_MD))
         }
         root.addView(dateText)
 
@@ -124,10 +124,14 @@ class NoteDetailDialog(
         //          00:41            1×
         val playerCard = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(16))
+            // A recording for a note is short (seconds to a couple of minutes),
+            // so the player is a compact row rather than a large card; the
+            // transcript is what deserves the space.
+            setPadding(dp(OpenWisprUi.SPACE_MD), dp(OpenWisprUi.SPACE_SM),
+                        dp(OpenWisprUi.SPACE_MD), dp(OpenWisprUi.SPACE_SM))
             background = OpenWisprUi.surface(context)
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(24)
+                bottomMargin = dp(OpenWisprUi.SPACE_LG)
             }
             layoutParams = lp
         }
@@ -141,8 +145,8 @@ class NoteDetailDialog(
             text = "▶"
             contentDescription = "Play recording"
             textSize = 20f
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xFF2A2A2A.toInt())
+            setTextColor(OpenWisprUi.primaryText(context))
+            setBackgroundColor(OpenWisprUi.card(context))
             cornerRadius = dp(8)
             setPadding(dp(12), dp(8), dp(12), dp(8))
             minWidth = dp(48)
@@ -157,7 +161,7 @@ class NoteDetailDialog(
                 marginEnd = dp(12)
             }
             progressTintList = ColorStateList.valueOf(0xFF3B82F6.toInt())
-            thumbTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
+            thumbTintList = ColorStateList.valueOf(OpenWisprUi.primaryText(context))
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (fromUser) {
@@ -174,7 +178,7 @@ class NoteDetailDialog(
         totalText = TextView(context).apply {
             text = "0:00"
             textSize = 13f
-            setTextColor(0xFF9E9E9E.toInt())
+            setTextColor(OpenWisprUi.secondaryText(context))
             minWidth = dp(38)
             gravity = Gravity.END
         }
@@ -200,7 +204,7 @@ class NoteDetailDialog(
         elapsedText = TextView(context).apply {
             text = "00:00"
             textSize = 12f
-            setTextColor(0xFF888888.toInt())
+            setTextColor(OpenWisprUi.mutedText(context))
             setPadding(dp(12), 0, 0, 0)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -211,7 +215,7 @@ class NoteDetailDialog(
             contentDescription = "Playback speed, 1 times"
             textSize = 13f
             setTypeface(typeface, Typeface.BOLD)
-            setTextColor(0xFF9E9E9E.toInt())
+            setTextColor(OpenWisprUi.secondaryText(context))
             backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
             setPadding(dp(8), 0, dp(8), 0)
             minWidth = dp(40)
@@ -234,8 +238,8 @@ class NoteDetailDialog(
         retryBtn = MaterialButton(context).apply {
             text = "Retry transcription"
             textSize = 14f
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xFF2A2A2A.toInt())
+            setTextColor(OpenWisprUi.primaryText(context))
+            setBackgroundColor(OpenWisprUi.card(context))
             visibility = View.GONE
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(16)
@@ -266,7 +270,7 @@ class NoteDetailDialog(
             text = "TRANSCRIPT"
             textSize = 12f
             setTypeface(typeface, Typeface.BOLD)
-            setTextColor(0xFF888888.toInt())
+            setTextColor(OpenWisprUi.mutedText(context))
         }
         transcriptLabelRow.addView(transcriptLabel)
 
@@ -279,12 +283,15 @@ class NoteDetailDialog(
         transcriptLabelRow.addView(editedBadge)
         transcriptContainer.addView(transcriptLabelRow)
 
-        // Transcript text with native Android BiDi support
+        // Transcript is the reason this screen exists, so it is the largest and
+        // most generously spaced element. Arabic needs extra leading to read
+        // comfortably; lineSpacingMultiplier does that without changing the
+        // stored text.
         transcriptText = TextView(context).apply {
-            textSize = 16f
-            setTextColor(0xFFFFFFFF.toInt())
-            setLineSpacing(dp(4).toFloat(), 1f)
-            setPadding(0, dp(4), 0, dp(16))
+            textSize = 17f
+            setTextColor(OpenWisprUi.primaryText(context))
+            setLineSpacing(0f, 1.45f)
+            setPadding(0, dp(4), 0, dp(20))
             textDirection = View.TEXT_DIRECTION_FIRST_STRONG
             textAlignment = View.TEXT_ALIGNMENT_VIEW_START
             setTextIsSelectable(true)
@@ -295,7 +302,7 @@ class NoteDetailDialog(
         viewOriginalBtn = MaterialButton(context, null, android.R.attr.borderlessButtonStyle).apply {
             text = "Edited   ·   Original"
             textSize = 13f
-            setTextColor(0xFF888888.toInt())
+            setTextColor(OpenWisprUi.mutedText(context))
             visibility = View.GONE
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(8)
@@ -318,18 +325,28 @@ class NoteDetailDialog(
         editBtn = MaterialButton(context).apply {
             text = "Edit"
             textSize = 14f
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xFF2A2A2A.toInt())
+            setTextColor(OpenWisprUi.primaryText(context))
+            setBackgroundColor(OpenWisprUi.card(context))
             cornerRadius = dp(8)
             setOnClickListener { promptEditTranscript() }
         }
         actionRow.addView(editBtn)
 
+        // Copy is the most common action on a transcript, so it leads the row.
+        copyBtn = MaterialButton(context).apply {
+            text = "Copy"
+            textSize = 14f
+            setTextColor(OpenWisprUi.primaryText(context))
+            setBackgroundColor(OpenWisprUi.ACCENT)
+            cornerRadius = dp(8)
+            setOnClickListener { copyTranscript() }
+        }
+        actionRow.addView(copyBtn)
+
         shareBtn = MaterialButton(context).apply {
             text = "Share"
             textSize = 14f
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xFF2A2A2A.toInt())
+            setTextColor(OpenWisprUi.primaryText(context))
             cornerRadius = dp(8)
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 marginStart = dp(12)
@@ -359,7 +376,11 @@ class NoteDetailDialog(
             return
         }
 
-        titleText.text = note.title
+        // No title block: the transcript is the screen, and repeating its
+        // first line above the player printed the same words twice. The
+        // timestamp line alone identifies the note.
+        titleText.text = "Voice note"
+        titleText.visibility = View.GONE
         dateText.text = "${Note.formatDateHeader(note.createdAt)}, ${Note.formatTime(note.createdAt)}"
         totalText.text = Note.formatDuration(note.audioDurationMs)
         seekBar.max = note.audioDurationMs.toInt()
@@ -367,7 +388,7 @@ class NoteDetailDialog(
         when (note.transcriptionState) {
             Note.State.PENDING -> {
                 statusBadge.text = "Transcribing…\nYour recording is safe."
-                statusBadge.setTextColor(0xFF9E9E9E.toInt())
+                statusBadge.setTextColor(OpenWisprUi.secondaryText(context))
                 statusBadge.visibility = View.VISIBLE
                 retryBtn.visibility = View.GONE
                 transcriptContainer.visibility = View.GONE
@@ -386,8 +407,22 @@ class NoteDetailDialog(
                 transcriptText.text = note.displayTranscript ?: ""
                 editedBadge.visibility = if (note.hasEditedTranscript) View.VISIBLE else View.GONE
                 viewOriginalBtn.visibility = if (note.hasEditedTranscript) View.VISIBLE else View.GONE
+                // Copying the edited text when one exists matches what the
+                // screen shows; the original is still reachable via
+                // "Original" and the Share sheet.
+                copyBtn.isEnabled = !note.displayTranscript.isNullOrBlank()
             }
         }
+    }
+
+    /** Copy the transcript exactly as displayed. No reformatting, no LLM. */
+    private fun copyTranscript() {
+        val text = currentNote?.displayTranscript.orEmpty()
+        if (text.isBlank()) return
+        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+            as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("Transcript", text))
+        android.widget.Toast.makeText(context, "Transcript copied", android.widget.Toast.LENGTH_SHORT).show()
     }
 
     private fun togglePlay() {
@@ -478,7 +513,7 @@ class NoteDetailDialog(
         val body = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(12), dp(20), dp(24))
-            setBackgroundColor(OpenWisprUi.SURFACE)
+            setBackgroundColor(OpenWisprUi.card(context))
             addView(TextView(context).apply {
                 text = "Share"
                 textSize = 20f
@@ -512,12 +547,12 @@ class NoteDetailDialog(
         val input = EditText(context).apply {
             setText(currentText)
             textSize = 16f
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(OpenWisprUi.primaryText(context))
             setHintTextColor(0xFF666666.toInt())
             textDirection = View.TEXT_DIRECTION_FIRST_STRONG
             textAlignment = View.TEXT_ALIGNMENT_VIEW_START
             setPadding(dp(16), dp(12), dp(16), dp(12))
-            setBackgroundColor(0xFF222222.toInt())
+            setBackgroundColor(OpenWisprUi.card(context))
         }
 
         MaterialAlertDialogBuilder(context)
@@ -543,7 +578,7 @@ class NoteDetailDialog(
         val tv = TextView(context).apply {
             text = original
             textSize = 15f
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(OpenWisprUi.primaryText(context))
             textDirection = View.TEXT_DIRECTION_FIRST_STRONG
             textAlignment = View.TEXT_ALIGNMENT_VIEW_START
             setPadding(dp(20), dp(12), dp(20), dp(12))
